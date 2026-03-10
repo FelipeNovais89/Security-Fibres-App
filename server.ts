@@ -1,80 +1,72 @@
 import express from "express";
 import cors from "cors";
-import ytdl from "@distube/ytdl-core";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import Database from "better-sqlite3";
+
+const db = new Database("data.db");
+
+// Initialize database
+db.exec(`
+  CREATE TABLE IF NOT EXISTS app_data (
+    key TEXT PRIMARY KEY,
+    value TEXT
+  )
+`);
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' })); // Allow large payloads for all data
 
-  // API: Get YouTube Audio Info
-  app.get("/api/info", async (req, res) => {
-    const videoUrl = req.query.url as string;
-    if (!videoUrl) return res.status(400).json({ error: "URL is required" });
-
-    // Basic validation
-    if (!ytdl.validateURL(videoUrl)) {
-      return res.status(400).json({ error: "Invalid YouTube URL. Please provide a valid link." });
-    }
-
+  // API: Get all data
+  app.get("/api/data", (req, res) => {
     try {
-      const info = await ytdl.getInfo(videoUrl, {
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          }
-        }
+      const rows = db.prepare("SELECT * FROM app_data").all();
+      const data: Record<string, any> = {};
+      rows.forEach((row: any) => {
+        data[row.key] = JSON.parse(row.value);
       });
-      
-      res.json({
-        title: info.videoDetails.title,
-        author: info.videoDetails.author.name,
-        thumbnail: info.videoDetails.thumbnails[0].url,
-        duration: info.videoDetails.lengthSeconds,
-      });
+      res.json(data);
     } catch (error: any) {
-      console.error("Info error:", error.message);
-      let message = "YouTube blocked the request. This often happens with restricted videos.";
-      if (error.message.includes("403")) message = "YouTube access forbidden (403). Try another link or a local file.";
-      if (error.message.includes("404")) message = "Video not found (404). Check the link.";
-      if (error.message.includes("age-restricted")) message = "This video is age-restricted and cannot be processed.";
-      
-      res.status(500).json({ error: message });
+      console.error("Get data error:", error.message);
+      res.status(500).json({ error: "Failed to load data" });
     }
   });
 
-  // API: Stream YouTube Audio
-  app.get("/api/stream", async (req, res) => {
-    const videoUrl = req.query.url as string;
-    if (!videoUrl || !ytdl.validateURL(videoUrl)) {
-      return res.status(400).json({ error: "Valid YouTube URL is required" });
-    }
+  // API: Save data
+  app.post("/api/data", (req, res) => {
+    const { key, value } = req.body;
+    if (!key) return res.status(400).json({ error: "Key is required" });
 
     try {
-      const info = await ytdl.getInfo(videoUrl);
-      const format = ytdl.chooseFormat(info.formats, { 
-        quality: "highestaudio", 
-        filter: "audioonly" 
-      });
-      
-      if (!format) throw new Error("No audio format found");
-
-      res.setHeader("Content-Type", "audio/mpeg");
-      ytdl(videoUrl, { 
-        format,
-        requestOptions: {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          }
-        }
-      }).pipe(res);
+      const stmt = db.prepare("INSERT OR REPLACE INTO app_data (key, value) VALUES (?, ?)");
+      stmt.run(key, JSON.stringify(value));
+      res.json({ success: true });
     } catch (error: any) {
-      console.error("Stream error:", error.message);
-      res.status(500).json({ error: "Streaming failed: " + error.message });
+      console.error("Save data error:", error.message);
+      res.status(500).json({ error: "Failed to save data" });
+    }
+  });
+
+  // API: Save multiple keys at once
+  app.post("/api/data/batch", (req, res) => {
+    const data = req.body; // Expecting an object { key1: value1, key2: value2 }
+    
+    try {
+      const insert = db.prepare("INSERT OR REPLACE INTO app_data (key, value) VALUES (?, ?)");
+      const transaction = db.transaction((items) => {
+        for (const [key, value] of Object.entries(items)) {
+          insert.run(key, JSON.stringify(value));
+        }
+      });
+      transaction(data);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Batch save error:", error.message);
+      res.status(500).json({ error: "Failed to save batch data" });
     }
   });
 
@@ -91,7 +83,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`SonicSplit Server running on port ${PORT}`);
+    console.log(`FiberQC Server running on port ${PORT}`);
   });
 }
 

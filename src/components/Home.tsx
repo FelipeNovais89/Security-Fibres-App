@@ -22,9 +22,11 @@ import { cn } from '../utils/cn';
 
 interface HomeProps {
   onSelectModule: (module: 'labels' | 'fibre' | 'ink' | 'database' | 'timeclock' | 'production') => void;
+  printerDevice: any;
+  onConnectPrinter: () => void;
 }
 
-const Home: React.FC<HomeProps> = ({ onSelectModule }) => {
+const Home: React.FC<HomeProps> = ({ onSelectModule, printerDevice, onConnectPrinter }) => {
   const areas = [
     {
       id: 'production',
@@ -193,7 +195,24 @@ const Home: React.FC<HomeProps> = ({ onSelectModule }) => {
         </div>
 
         <div className="flex items-center gap-3 bg-slate-900/50 p-2 rounded-2xl border border-slate-800/50">
-          <div className="px-4 py-2 border-r border-slate-800">
+          <button 
+            onClick={onConnectPrinter}
+            className={cn(
+              "flex items-center gap-3 px-4 py-2 rounded-xl transition-all border",
+              printerDevice 
+                ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-500" 
+                : "bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-500"
+            )}
+          >
+            <Printer size={16} className={cn(printerDevice ? "text-emerald-500" : "text-slate-500")} />
+            <div className="text-left">
+              <p className="text-[9px] uppercase font-bold tracking-wider opacity-60">Printer</p>
+              <p className="text-[11px] font-mono leading-none mt-0.5">
+                {printerDevice ? printerDevice.name : "Disconnected"}
+              </p>
+            </div>
+          </button>
+          <div className="px-4 py-2 border-l border-slate-800">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Shift Status</p>
             <p className="text-xs text-white font-mono">Shift A • 06:00 - 14:00</p>
           </div>
