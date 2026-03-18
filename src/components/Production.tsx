@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Html5QrcodeScanner } from 'html5-qrcode';
 import { 
   Scissors, 
   Fan, 
   Plus, 
+  Minus,
   History, 
   ChevronRight, 
   Package, 
@@ -19,7 +21,9 @@ import {
   Box,
   Droplets,
   Layers,
-  Database
+  Database,
+  Camera,
+  AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../utils/cn';
@@ -48,12 +52,16 @@ interface Machine {
   type: 'blower' | 'shaker';
   status: 'clean' | 'in_production' | 'needs_cleaning';
   currentBagId?: string;
+  currentBagIds?: string[];
+  sourceBags?: { id: string; weightUsed: number; usedEntirely: boolean }[];
+  blowingPasses?: number;
   currentBagSerialNumber?: string;
   currentProduct?: string;
   assignedProduct?: string;
 }
 
 interface ProductionProps {
+  customers: any[];
   products: any[];
   productCodes: ProductCode[];
   boms: BOM[];
@@ -305,6 +313,7 @@ const ActiveShakerItem = ({
 };
 
 const Production: React.FC<ProductionProps> = ({ 
+  customers,
   products,
   productCodes,
   boms,
@@ -333,20 +342,78 @@ const Production: React.FC<ProductionProps> = ({
   const [newReelSupplier, setNewReelSupplier] = useState('');
 
   // Printing Form State
-  const [printingProductCode, setPrintingProductCode] = useState('');
+  const [printingCustomer, setPrintingCustomer] = useState('');
+  const [printingColour, setPrintingColour] = useState('');
   const [printingSourceReel, setPrintingSourceReel] = useState('');
   const [printingInks, setPrintingInks] = useState<{ serial: string; consumption: number }[]>([]);
   const [printingFinalWeight, setPrintingFinalWeight] = useState<string>('');
   const [printingSerial, setPrintingSerial] = useState('');
   const [printingWeightUsed, setPrintingWeightUsed] = useState<string>('');
+  const [printingUsedEntireReel, setPrintingUsedEntireReel] = useState(false);
+  const [printingDefects, setPrintingDefects] = useState('');
+  const [printingDefectsQty, setPrintingDefectsQty] = useState<string>('');
+  const [isScanning, setIsScanning] = useState(false);
+  const scannerRef = useRef<Html5QrcodeScanner | null>(null);
+
+  // Auto-generate serial number
+  useEffect(() => {
+    if (printingSourceReel) {
+      const count = printedReels.filter(r => r.sourceReelSerial === printingSourceReel).length + 1;
+      setPrintingSerial(`${printingSourceReel} - N${count}`);
+    } else {
+      setPrintingSerial('');
+    }
+  }, [printingSourceReel, printedReels]);
+
+  const startScanning = () => {
+    setIsScanning(true);
+    setTimeout(() => {
+      const scanner = new Html5QrcodeScanner(
+        "reader",
+        { fps: 10, qrbox: { width: 250, height: 250 } },
+        /* verbose= */ false
+      );
+      scanner.render((decodedText) => {
+        setPrintingSourceReel(decodedText);
+        scanner.clear();
+        setIsScanning(false);
+      }, (error) => {
+        // console.warn(error);
+      });
+      scannerRef.current = scanner;
+    }, 100);
+  };
+
+  const stopScanning = () => {
+    if (scannerRef.current) {
+      scannerRef.current.clear();
+      scannerRef.current = null;
+    }
+    setIsScanning(false);
+  };
 
   // Cutting Form State
   const [cuttingSourceReel, setCuttingSourceReel] = useState('');
   const [cuttingNumBags, setCuttingNumBags] = useState(1);
-  const [cuttingWeightPerBag, setCuttingWeightPerBag] = useState<string>('');
+  const [cuttingBagWeights, setCuttingBagWeights] = useState<string[]>(['']);
+
+  // Update bag weights array when number of bags changes
+  useEffect(() => {
+    setCuttingBagWeights(prev => {
+      const newWeights = [...prev];
+      if (cuttingNumBags > newWeights.length) {
+        for (let i = newWeights.length; i < cuttingNumBags; i++) {
+          newWeights.push(prev[0] || ''); // Default to the first bag's weight or empty
+        }
+      } else if (cuttingNumBags < newWeights.length) {
+        return newWeights.slice(0, cuttingNumBags);
+      }
+      return newWeights;
+    });
+  }, [cuttingNumBags]);
 
   // Blowing Form State
-  const [blowingSourceBag, setBlowingSourceBag] = useState('');
+  const [blowingSelectedBags, setBlowingSelectedBags] = useState<{ id: string; weightUsed: number; usedEntirely: boolean }[]>([]);
   const [selectedBlower, setSelectedBlower] = useState('');
 
   // Shaking Form State
@@ -406,7 +473,7 @@ const Production: React.FC<ProductionProps> = ({
 
   // Auto-select blower/shaker if a machine is already assigned to the selected bag's product
   useEffect(() => {
-    const sourceBagId = activeTab === 'blowing' ? blowingSourceBag : shakingSourceBag;
+    const sourceBagId = activeTab === 'blowing' ? (blowingSelectedBags[0]?.id || '') : shakingSourceBag;
     const selectedMachineId = activeTab === 'blowing' ? selectedBlower : selectedShaker;
     const setMachine = activeTab === 'blowing' ? setSelectedBlower : setSelectedShaker;
 
@@ -431,7 +498,7 @@ const Production: React.FC<ProductionProps> = ({
     if (assignedMachine && !selectedMachineId) {
       setMachine(assignedMachine.id);
     }
-  }, [blowingSourceBag, shakingSourceBag, activeTab, freshCutBags, blownBags, machines]);
+  }, [blowingSelectedBags, shakingSourceBag, activeTab, freshCutBags, blownBags, machines]);
 
   const handleAddRawReel = () => {
     if (!newReelSerial || !newReelWeight || !newReelGsm) return;
@@ -454,7 +521,10 @@ const Production: React.FC<ProductionProps> = ({
   };
 
   const handleStartPrinting = () => {
-    if (!printingProductCode || !printingSourceReel || !printingSerial || !printingWeightUsed) return;
+    if (!printingCustomer || !printingColour || !printingSourceReel || !printingSerial || !printingWeightUsed) {
+      alert('Please fill in all required fields');
+      return;
+    }
 
     const sourceReel = paperReels.find(r => r.serialNumber === printingSourceReel);
     if (!sourceReel) return;
@@ -467,12 +537,16 @@ const Production: React.FC<ProductionProps> = ({
 
     const newPrintedReel: PrintedPaperReel = {
       serialNumber: printingSerial,
-      productCode: printingProductCode,
+      customer: printingCustomer,
+      colour: printingColour,
       sourceReelSerial: printingSourceReel,
       inksUsed: printingInks,
       finalWeight: parseFloat(printingFinalWeight) || weightUsed,
       productionDate: Date.now(),
-      status: 'Available for Cutting'
+      status: 'Available for Cutting',
+      defects: printingDefects,
+      defectsQty: parseFloat(printingDefectsQty) || 0,
+      usedEntireSourceReel: printingUsedEntireReel
     };
 
     setPrintedReels(prev => [...prev, newPrintedReel]);
@@ -480,6 +554,9 @@ const Production: React.FC<ProductionProps> = ({
     // Update source reel weight or status
     setPaperReels(prev => prev.map(r => {
       if (r.serialNumber === printingSourceReel) {
+        if (printingUsedEntireReel) {
+          return { ...r, weight: 0, status: 'Consumed' };
+        }
         const remainingWeight = r.weight - weightUsed;
         return {
           ...r,
@@ -491,12 +568,16 @@ const Production: React.FC<ProductionProps> = ({
     }));
     
     // Reset form
-    setPrintingProductCode('');
+    setPrintingCustomer('');
+    setPrintingColour('');
     setPrintingSourceReel('');
     setPrintingInks([]);
     setPrintingFinalWeight('');
     setPrintingSerial('');
     setPrintingWeightUsed('');
+    setPrintingUsedEntireReel(false);
+    setPrintingDefects('');
+    setPrintingDefectsQty('');
     setActiveTab('inventory');
   };
 
@@ -509,10 +590,12 @@ const Production: React.FC<ProductionProps> = ({
     const newBags: FreshCutBag[] = [];
     for (let i = 1; i <= cuttingNumBags; i++) {
       newBags.push({
-        id: uuidv4(),
+        id: `${reel.serialNumber}/${i}`,
         parentReelSerial: reel.serialNumber,
+        customer: reel.customer,
+        colour: reel.colour,
         productCode: reel.productCode,
-        weight: parseFloat(cuttingWeightPerBag) || 0,
+        weight: parseFloat(cuttingBagWeights[i-1]) || 0,
         cuttingDate: Date.now(),
         status: 'Available for Blowing'
       });
@@ -523,58 +606,99 @@ const Production: React.FC<ProductionProps> = ({
     
     setCuttingSourceReel('');
     setCuttingNumBags(1);
-    setCuttingWeightPerBag('');
+    setCuttingBagWeights(['']);
     setActiveTab('inventory');
   };
 
   const handleStartBlowing = () => {
-    if (!blowingSourceBag || !selectedBlower) return;
+    if (blowingSelectedBags.length === 0 || !selectedBlower) return;
 
-    const bag = freshCutBags.find(b => b.id === blowingSourceBag);
     const machine = machines.find(m => m.id === selectedBlower);
-    if (!bag || !machine) return;
+    if (!machine) return;
 
-    setFreshCutBags(prev => prev.map(b => b.id === blowingSourceBag ? { ...b, status: 'In Blowing' } : b));
+    // Mark bags as "In Blowing"
+    setFreshCutBags(prev => prev.map(b => 
+      blowingSelectedBags.some(sb => sb.id === b.id) ? { ...b, status: 'In Blowing' } : b
+    ));
     
+    const firstBag = freshCutBags.find(b => b.id === blowingSelectedBags[0].id);
+
     setMachines(prev => prev.map(m => 
       m.id === selectedBlower 
         ? { 
             ...m, 
             status: 'in_production', 
-            currentBagId: bag.id, 
-            currentBagSerialNumber: bag.id.slice(0, 8),
-            currentProduct: bag.productCode,
-            assignedProduct: m.assignedProduct || bag.productCode
+            currentBagIds: blowingSelectedBags.map(sb => sb.id),
+            sourceBags: blowingSelectedBags,
+            blowingPasses: 1,
+            currentBagSerialNumber: blowingSelectedBags.length > 1 
+              ? `${blowingSelectedBags.length} Bags` 
+              : blowingSelectedBags[0].id,
+            currentProduct: firstBag ? `${firstBag.customer} • ${firstBag.colour}` : 'Mixed Bags',
+            assignedProduct: m.assignedProduct || (firstBag ? `${firstBag.customer} • ${firstBag.colour}` : '')
           } 
         : m
     ));
 
-    setBlowingSourceBag('');
+    setBlowingSelectedBags([]);
     setSelectedBlower('');
   };
 
   const handleFinishBlowing = (machineId: string) => {
     const machine = machines.find(m => m.id === machineId);
-    if (!machine || !machine.currentBagId) return;
+    if (!machine || (!machine.currentBagId && !machine.currentBagIds)) return;
 
-    const sourceBag = freshCutBags.find(b => b.id === machine.currentBagId);
-    if (!sourceBag) return;
+    const sourceBagsInfo = machine.sourceBags || (machine.currentBagId ? [{ id: machine.currentBagId, weightUsed: 0, usedEntirely: true }] : []);
+    
+    // Find actual bags from freshCutBags
+    const bags = freshCutBags.filter(b => sourceBagsInfo.some(sb => sb.id === b.id));
+    if (bags.length === 0) return;
+
+    const firstBag = bags[0];
+    const totalWeight = sourceBagsInfo.reduce((sum, sb) => {
+      if (sb.usedEntirely) {
+        const bag = bags.find(b => b.id === sb.id);
+        return sum + (bag?.weight || 0);
+      }
+      return sum + sb.weightUsed;
+    }, 0);
 
     const newBlownBag: BlownBag = {
       id: uuidv4(),
-      parentBagId: sourceBag.id,
-      productCode: sourceBag.productCode,
-      weight: sourceBag.weight,
+      parentBagIds: sourceBagsInfo.map(sb => sb.id),
+      sourceBags: sourceBagsInfo,
+      customer: firstBag.customer,
+      colour: firstBag.colour,
+      productCode: firstBag.productCode,
+      weight: totalWeight,
       blowingDate: Date.now(),
       startTime: Date.now() - 3600000, // Mock 1h duration
       finishTime: Date.now(),
       duration: 60,
+      blowingPasses: machine.blowingPasses,
       machineId: machineId,
       status: 'Available for Shaking'
     };
 
     setBlownBags(prev => [...prev, newBlownBag]);
-    setFreshCutBags(prev => prev.map(b => b.id === sourceBag.id ? { ...b, status: 'Blown' } : b));
+    
+    // Update freshCutBags: if usedEntirely, status = 'Blown'. If not, subtract weight and status = 'Available for Blowing'
+    setFreshCutBags(prev => prev.map(b => {
+      const sbInfo = sourceBagsInfo.find(sb => sb.id === b.id);
+      if (sbInfo) {
+        if (sbInfo.usedEntirely) {
+          return { ...b, status: 'Blown' };
+        } else {
+          const remainingWeight = b.weight - sbInfo.weightUsed;
+          return { 
+            ...b, 
+            weight: Math.max(0, remainingWeight), 
+            status: remainingWeight <= 0.01 ? 'Blown' : 'Available for Blowing' 
+          };
+        }
+      }
+      return b;
+    }));
     
     setMachines(prev => prev.map(m => 
       m.id === machineId 
@@ -582,6 +706,8 @@ const Production: React.FC<ProductionProps> = ({
             ...m, 
             status: 'in_production', 
             currentBagId: undefined, 
+            currentBagIds: undefined,
+            sourceBags: undefined,
             currentBagSerialNumber: undefined,
             currentProduct: undefined 
           } 
@@ -596,9 +722,28 @@ const Production: React.FC<ProductionProps> = ({
             ...m, 
             status: 'needs_cleaning', 
             currentBagId: undefined, 
+            currentBagIds: undefined,
+            sourceBags: undefined,
+            blowingPasses: undefined,
             currentBagSerialNumber: undefined,
             currentProduct: undefined 
           } 
+        : m
+    ));
+  };
+
+  const handleIncrementBlowingPasses = (machineId: string) => {
+    setMachines(prev => prev.map(m => 
+      m.id === machineId 
+        ? { ...m, blowingPasses: (m.blowingPasses || 0) + 1 } 
+        : m
+    ));
+  };
+
+  const handleDecrementBlowingPasses = (machineId: string) => {
+    setMachines(prev => prev.map(m => 
+      m.id === machineId 
+        ? { ...m, blowingPasses: Math.max(1, (m.blowingPasses || 1) - 1) } 
         : m
     ));
   };
@@ -619,9 +764,9 @@ const Production: React.FC<ProductionProps> = ({
             ...m, 
             status: 'in_production', 
             currentBagId: bag.id, 
-            currentBagSerialNumber: bag.id.slice(0, 8),
-            currentProduct: bag.productCode,
-            assignedProduct: m.assignedProduct || bag.productCode
+            currentBagSerialNumber: bag.id,
+            currentProduct: `${bag.customer} • ${bag.colour}`,
+            assignedProduct: m.assignedProduct || `${bag.customer} • ${bag.colour}`
           } 
         : m
     ));
@@ -640,6 +785,8 @@ const Production: React.FC<ProductionProps> = ({
     
     if (!sourceBlownBag && !sourceShakenBag) return;
 
+    const customer = sourceBlownBag?.customer || sourceShakenBag?.customer || '';
+    const colour = sourceBlownBag?.colour || sourceShakenBag?.colour || '';
     const productCode = sourceBlownBag?.productCode || sourceShakenBag?.productCode || '';
     const sourceId = sourceBlownBag?.id || sourceShakenBag?.id || '';
     const currentDBagLevel = sourceShakenBag?.dBagLevel || 0;
@@ -649,6 +796,8 @@ const Production: React.FC<ProductionProps> = ({
     if (!targetBoxNum && newBoxNumber) {
       const newBox: FinalBox = {
         boxNumber: newBoxNumber,
+        customer: customer,
+        colour: colour,
         productCode: productCode,
         bags: [],
         totalWeight: 0,
@@ -678,6 +827,8 @@ const Production: React.FC<ProductionProps> = ({
     const newShakenBag: ShakenBag = {
       id: uuidv4(),
       parentBlownBagId: sourceId,
+      customer: customer,
+      colour: colour,
       productCode: productCode,
       usableWeight: goodWeight,
       wasteWeight: wasteWeight,
@@ -778,13 +929,13 @@ const Production: React.FC<ProductionProps> = ({
       id: b.id,
       productCode: b.productCode,
       weight: b.weight,
-      label: `${b.id.slice(0, 8)} (Blown - ${b.productCode} - ${b.weight}kg)`
+      label: `${b.id} (Blown - ${b.productCode} - ${b.weight}kg)`
     })),
     ...shakenBags.filter(b => b.status === 'D-Bag').map(b => ({
       id: b.id,
       productCode: b.productCode,
       weight: b.dBagWeight || 0,
-      label: `${b.id.slice(0, 8)} (D${b.dBagLevel} - ${b.productCode} - ${b.dBagWeight}kg)`
+      label: `${b.id} (D${b.dBagLevel} - ${b.productCode} - ${b.dBagWeight}kg)`
     }))
   ];
 
@@ -793,7 +944,9 @@ const Production: React.FC<ProductionProps> = ({
     return {
       id: b.id,
       timestamp: b.blowingDate,
-      bagSerialNumber: b.id.slice(0, 8),
+      bagSerialNumber: b.id,
+      sourceBags: b.sourceBags || [],
+      passes: b.blowingPasses || 1,
       product: b.productCode,
       blower: machine?.name || 'Unknown',
       bay: machine?.bay || 'Unknown'
@@ -806,7 +959,7 @@ const Production: React.FC<ProductionProps> = ({
     return {
       id: b.id,
       timestamp: b.shakingDate,
-      bagSerialNumber: b.id.slice(0, 8),
+      bagSerialNumber: b.id,
       product: b.productCode,
       boxNumber: box?.boxNumber || 'N/A',
       status: b.status
@@ -842,16 +995,6 @@ const Production: React.FC<ProductionProps> = ({
 
       {/* Tabs */}
       <div className="flex flex-wrap gap-2 p-1 bg-slate-900 border border-slate-800 rounded-2xl mb-8 w-fit">
-        <button
-          onClick={() => setActiveTab('raw_materials')}
-          className={cn(
-            "flex items-center gap-2 px-6 py-2.5 rounded-xl transition-all font-bold text-sm",
-            activeTab === 'raw_materials' ? "bg-blue-600 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"
-          )}
-        >
-          <Database size={16} />
-          Raw Materials
-        </button>
         <button
           onClick={() => setActiveTab('printing')}
           className={cn(
@@ -1060,22 +1203,46 @@ const Production: React.FC<ProductionProps> = ({
                 </h3>
                 
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Product Code</label>
-                    <select 
-                      value={printingProductCode}
-                      onChange={(e) => setPrintingProductCode(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
-                    >
-                      <option value="">Select product...</option>
-                      {productCodes.map(p => (
-                        <option key={p.code} value={p.code}>{p.code} - {p.name}</option>
-                      ))}
-                    </select>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Customer</label>
+                      <select 
+                        value={printingCustomer}
+                        onChange={(e) => setPrintingCustomer(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                      >
+                        <option value="">Select customer...</option>
+                        {customers.map(c => (
+                          <option key={c.id} value={c.name}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Colour</label>
+                      <select 
+                        value={printingColour}
+                        onChange={(e) => setPrintingColour(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                      >
+                        <option value="">Select colour...</option>
+                        {Array.from(new Set(products.map(p => p.colour).filter(Boolean))).map(colour => (
+                          <option key={colour} value={colour}>{colour}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
 
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Source Paper Reel</label>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest flex justify-between">
+                      Source Paper Reel
+                      <button 
+                        onClick={startScanning}
+                        className="text-blue-500 hover:text-blue-400 flex items-center gap-1"
+                      >
+                        <Camera size={12} />
+                        Scan
+                      </button>
+                    </label>
                     <select 
                       value={printingSourceReel}
                       onChange={(e) => setPrintingSourceReel(e.target.value)}
@@ -1088,44 +1255,148 @@ const Production: React.FC<ProductionProps> = ({
                     </select>
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Printed Reel Serial Number</label>
-                    <input 
-                      type="text" 
-                      placeholder="e.g. PR-3260248CC2"
-                      value={printingSerial}
-                      onChange={(e) => setPrintingSerial(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                    />
+                  {isScanning && (
+                    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+                      <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 w-full max-w-md">
+                        <div className="flex justify-between items-center mb-4">
+                          <h3 className="font-bold">Scan Barcode</h3>
+                          <button onClick={stopScanning} className="p-2 text-slate-500 hover:text-white">
+                            <X size={20} />
+                          </button>
+                        </div>
+                        <div id="reader" className="overflow-hidden rounded-2xl border border-slate-800 bg-black"></div>
+                        <p className="text-center text-xs text-slate-500 mt-4">Point the camera at the reel's barcode</p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Reel Number (Serial)</label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. 3225711M22 - N1"
+                        value={printingSerial}
+                        onChange={(e) => setPrintingSerial(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Reel Weight (Final Kg)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="0.00"
+                        value={printingFinalWeight}
+                        onChange={(e) => setPrintingFinalWeight(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Weight Used from Source (Kg)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="0.00"
+                        value={printingWeightUsed}
+                        onChange={(e) => setPrintingWeightUsed(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3 pt-6">
+                      <label className="flex items-center gap-2 cursor-pointer group">
+                        <div className={cn(
+                          "w-5 h-5 rounded border flex items-center justify-center transition-all",
+                          printingUsedEntireReel ? "bg-blue-600 border-blue-600" : "border-slate-700 group-hover:border-slate-500"
+                        )} onClick={() => setPrintingUsedEntireReel(!printingUsedEntireReel)}>
+                          {printingUsedEntireReel && <CheckCircle2 size={14} className="text-white" />}
+                        </div>
+                        <span className="text-xs text-slate-400 font-medium">Entire Reel used?</span>
+                      </label>
+                    </div>
                   </div>
 
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Weight Used from Source (Kg)</label>
-                    <input 
-                      type="number" 
-                      step="0.01"
-                      placeholder="0.00"
-                      value={printingWeightUsed}
-                      onChange={(e) => setPrintingWeightUsed(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                    />
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Defects (Description & Qty)</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        placeholder="Describe defects..."
+                        value={printingDefects}
+                        onChange={(e) => setPrintingDefects(e.target.value)}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                      <input 
+                        type="number" 
+                        placeholder="Qty"
+                        value={printingDefectsQty}
+                        onChange={(e) => setPrintingDefectsQty(e.target.value)}
+                        className="w-20 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
                   </div>
 
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Final Printed Weight (Kg)</label>
-                    <input 
-                      type="number" 
-                      step="0.01"
-                      placeholder="0.00"
-                      value={printingFinalWeight}
-                      onChange={(e) => setPrintingFinalWeight(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                    />
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Ink's usage</label>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
+                        <select 
+                          id="ink-select"
+                          className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                        >
+                          <option value="">Select ink...</option>
+                          {inkCans.filter(i => i.status !== 'Empty').map(ink => (
+                            <option key={ink.serialNumber} value={ink.serialNumber}>{ink.serialNumber} ({ink.colour} - {ink.remainingVolume}L)</option>
+                          ))}
+                        </select>
+                        <input 
+                          id="ink-qty"
+                          type="number" 
+                          step="0.01"
+                          placeholder="Qty (L)"
+                          className="w-24 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                        />
+                        <button 
+                          onClick={() => {
+                            const select = document.getElementById('ink-select') as HTMLSelectElement;
+                            const qtyInput = document.getElementById('ink-qty') as HTMLInputElement;
+                            const serial = select.value;
+                            const consumption = parseFloat(qtyInput.value);
+                            if (serial && consumption > 0) {
+                              setPrintingInks(prev => [...prev, { serial, consumption }]);
+                              select.value = '';
+                              qtyInput.value = '';
+                            }
+                          }}
+                          className="p-3 bg-slate-800 hover:bg-slate-700 text-blue-500 rounded-xl transition-all"
+                        >
+                          <Plus size={20} />
+                        </button>
+                      </div>
+                      
+                      <div className="flex flex-wrap gap-2">
+                        {printingInks.map((ink, idx) => (
+                          <div key={idx} className="flex items-center gap-2 bg-slate-950 border border-slate-800 px-3 py-1.5 rounded-lg text-xs">
+                            <span className="text-slate-300 font-mono">{ink.serial}</span>
+                            <span className="text-blue-500 font-bold">{ink.consumption}L</span>
+                            <button 
+                              onClick={() => setPrintingInks(prev => prev.filter((_, i) => i !== idx))}
+                              className="text-slate-600 hover:text-rose-500"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                   
                   <button
                     onClick={handleStartPrinting}
-                    disabled={!printingProductCode || !printingSourceReel || !printingSerial}
+                    disabled={!printingCustomer || !printingColour || !printingSourceReel || !printingSerial}
                     className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20"
                   >
                     <CheckCircle2 size={18} />
@@ -1164,7 +1435,7 @@ const Production: React.FC<ProductionProps> = ({
                           <div>
                             <p className="font-mono font-bold text-sm text-slate-200">{roll.serialNumber}</p>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{roll.productCode}</p>
+                              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{roll.customer} • {roll.colour}</p>
                               <span className="text-slate-700 text-[10px]">•</span>
                               <p className="text-[10px] text-slate-500 uppercase tracking-widest">{roll.finalWeight}kg</p>
                             </div>
@@ -1212,7 +1483,7 @@ const Production: React.FC<ProductionProps> = ({
                     >
                       <option value="">Select a reel...</option>
                       {availablePrintedReels.map(roll => (
-                        <option key={roll.serialNumber} value={roll.serialNumber}>{roll.serialNumber} ({roll.productCode})</option>
+                        <option key={roll.serialNumber} value={roll.serialNumber}>{roll.serialNumber} ({roll.customer} • {roll.colour})</option>
                       ))}
                     </select>
                   </div>
@@ -1234,17 +1505,41 @@ const Production: React.FC<ProductionProps> = ({
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Weight per Bag (Kg)</label>
-                    <input 
-                      type="number" 
-                      step="0.01"
-                      placeholder="0.00"
-                      value={cuttingWeightPerBag}
-                      onChange={(e) => setCuttingWeightPerBag(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
-                    />
-                  </div>
+                  {cuttingSourceReel && (
+                    <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="bg-slate-900/50 border-b border-slate-800">
+                            <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider">Bag ID</th>
+                            <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider">Weight (Kg)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800">
+                          {Array.from({ length: cuttingNumBags }).map((_, i) => (
+                            <tr key={i} className="hover:bg-slate-800/30 transition-colors">
+                              <td className="px-4 py-3 font-mono text-slate-400">
+                                {cuttingSourceReel}/{i + 1}
+                              </td>
+                              <td className="px-4 py-2">
+                                <input 
+                                  type="number" 
+                                  step="0.01"
+                                  placeholder="0.00"
+                                  value={cuttingBagWeights[i] || ''}
+                                  onChange={(e) => {
+                                    const newWeights = [...cuttingBagWeights];
+                                    newWeights[i] = e.target.value;
+                                    setCuttingBagWeights(newWeights);
+                                  }}
+                                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                />
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                   
                   <button
                     onClick={handleStartCutting}
@@ -1285,9 +1580,9 @@ const Production: React.FC<ProductionProps> = ({
                             <Package size={20} />
                           </div>
                           <div>
-                            <p className="font-mono font-bold text-sm text-slate-200">{bag.id.slice(0, 8)}</p>
+                            <p className="font-mono font-bold text-sm text-slate-200">{bag.id}</p>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{bag.productCode}</p>
+                              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{bag.customer} • {bag.colour}</p>
                               <span className="text-slate-700 text-[10px]">•</span>
                               <p className="text-[10px] text-slate-500 uppercase tracking-widest">{bag.weight}kg</p>
                             </div>
@@ -1398,7 +1693,7 @@ const Production: React.FC<ProductionProps> = ({
                       <div key={roll.serialNumber} className="p-3 bg-slate-950 border border-slate-800 rounded-xl flex justify-between items-center">
                         <div>
                           <p className="font-mono font-bold text-sm text-slate-200">{roll.serialNumber}</p>
-                          <p className="text-[10px] text-slate-500 uppercase tracking-widest">{roll.productCode} • {roll.finalWeight}kg</p>
+                          <p className="text-[10px] text-slate-500 uppercase tracking-widest">{roll.customer} • {roll.colour} • {roll.finalWeight}kg</p>
                         </div>
                         <span className="px-2 py-1 bg-blue-500/10 text-blue-500 rounded-full text-[8px] font-bold uppercase tracking-widest">Available</span>
                       </div>
@@ -1456,17 +1751,128 @@ const Production: React.FC<ProductionProps> = ({
                 
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Fresh Cut Bag</label>
-                    <select 
-                      value={blowingSourceBag}
-                      onChange={(e) => setBlowingSourceBag(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
-                    >
-                      <option value="">Select a bag...</option>
-                      {availableFreshCutBags.map(bag => (
-                        <option key={bag.id} value={bag.id}>{bag.id.slice(0, 8)} ({bag.productCode} - {bag.weight}kg)</option>
-                      ))}
-                    </select>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Fresh Cut Bags</label>
+                    <div className="flex gap-2 mb-4">
+                      <select 
+                        value={""}
+                        onChange={(e) => {
+                          const bagId = e.target.value;
+                          if (!bagId) return;
+                          const bag = freshCutBags.find(b => b.id === bagId);
+                          if (bag && !blowingSelectedBags.some(sb => sb.id === bagId)) {
+                            setBlowingSelectedBags([...blowingSelectedBags, { id: bagId, weightUsed: bag.weight, usedEntirely: true }]);
+                          }
+                        }}
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                      >
+                        <option value="">Add a bag...</option>
+                        {availableFreshCutBags.filter(bag => !blowingSelectedBags.some(sb => sb.id === bag.id)).map(bag => (
+                          <option key={bag.id} value={bag.id}>{bag.id} ({bag.customer} • {bag.colour} - {bag.weight}kg)</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {blowingSelectedBags.length > 0 && (
+                      <div className="space-y-3 mb-6">
+                        {blowingSelectedBags.map((sb, index) => {
+                          const bag = freshCutBags.find(b => b.id === sb.id);
+                          return (
+                            <div key={sb.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500">
+                                    <Package size={16} />
+                                  </div>
+                                  <div>
+                                    <p className="font-mono font-bold text-xs text-slate-200">{sb.id}</p>
+                                    <p className="text-[10px] text-slate-500 uppercase tracking-widest">{bag?.customer} • {bag?.colour}</p>
+                                  </div>
+                                </div>
+                                <button 
+                                  onClick={() => setBlowingSelectedBags(blowingSelectedBags.filter((_, i) => i !== index))}
+                                  className="p-2 text-slate-600 hover:text-rose-500 transition-colors"
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              </div>
+
+                              <div className="flex items-center justify-between gap-4 pt-2 border-t border-slate-900">
+                                <div className="flex items-center gap-2">
+                                  <button 
+                                    onClick={() => {
+                                      const newBags = [...blowingSelectedBags];
+                                      const currentlyEntire = newBags[index].usedEntirely;
+                                      newBags[index].usedEntirely = !currentlyEntire;
+                                      if (newBags[index].usedEntirely && bag) {
+                                        newBags[index].weightUsed = bag.weight;
+                                      } else if (!newBags[index].usedEntirely && bag) {
+                                        // Default to 95% when switching to partial to show the slider
+                                        newBags[index].weightUsed = parseFloat(((bag.weight * 95) / 100).toFixed(2));
+                                      }
+                                      setBlowingSelectedBags(newBags);
+                                    }}
+                                    className={cn(
+                                      "px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-widest transition-all border",
+                                      sb.usedEntirely 
+                                        ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" 
+                                        : "bg-slate-900 text-slate-500 border-slate-800"
+                                    )}
+                                  >
+                                    {sb.usedEntirely ? "Used Entirely" : "Partial Usage"}
+                                  </button>
+                                </div>
+                                
+                                {!sb.usedEntirely && (
+                                  <div className="flex flex-col gap-3 w-full pt-2 border-t border-slate-900/50">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Usage Percentage</span>
+                                      <span className="text-[10px] font-bold text-blue-400">{Math.round((sb.weightUsed / (bag?.weight || 1)) * 100)}%</span>
+                                    </div>
+                                    <input 
+                                      type="range"
+                                      min="5"
+                                      max="100"
+                                      step="5"
+                                      value={Math.round((sb.weightUsed / (bag?.weight || 1)) * 100)}
+                                      onChange={(e) => {
+                                        const percent = parseInt(e.target.value);
+                                        const newBags = [...blowingSelectedBags];
+                                        if (bag) {
+                                          newBags[index].weightUsed = parseFloat(((bag.weight * percent) / 100).toFixed(2));
+                                          newBags[index].usedEntirely = percent === 100;
+                                        }
+                                        setBlowingSelectedBags(newBags);
+                                      }}
+                                      className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                    />
+                                    <div className="flex items-center gap-2 self-end">
+                                      <input 
+                                        type="number" 
+                                        step="0.01"
+                                        max={bag?.weight}
+                                        value={sb.weightUsed}
+                                        onChange={(e) => {
+                                          const newBags = [...blowingSelectedBags];
+                                          newBags[index].weightUsed = parseFloat(e.target.value) || 0;
+                                          setBlowingSelectedBags(newBags);
+                                        }}
+                                        className="w-24 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all text-right"
+                                      />
+                                      <span className="text-[10px] text-slate-500 font-bold">Kg</span>
+                                    </div>
+                                  </div>
+                                )}
+                                {sb.usedEntirely && (
+                                  <div className="flex items-center justify-end w-full pt-2 border-t border-slate-900/50">
+                                    <span className="text-[10px] text-slate-500 font-bold">{bag?.weight} Kg</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -1485,7 +1891,7 @@ const Production: React.FC<ProductionProps> = ({
                   
                   <button
                     onClick={handleStartBlowing}
-                    disabled={!blowingSourceBag || !selectedBlower}
+                    disabled={blowingSelectedBags.length === 0 || !selectedBlower}
                     className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20"
                   >
                     <Fan size={18} />
@@ -1505,15 +1911,35 @@ const Production: React.FC<ProductionProps> = ({
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {machines.filter(m => m.type === 'blower' && m.status === 'in_production').map(m => (
                     <div key={m.id} className="p-4 bg-slate-950 border border-slate-800 rounded-2xl">
-                      {m.currentBagId ? (
+                      {m.currentBagId || m.currentBagIds ? (
                         <>
-                          <div className="flex items-center gap-4 mb-4">
-                            <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
-                              <Fan className="animate-spin-slow" size={20} />
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-4">
+                              <div className="w-10 h-10 rounded-xl bg-blue-500/10 text-blue-500 flex items-center justify-center">
+                                <Fan className="animate-spin-slow" size={20} />
+                              </div>
+                              <div>
+                                <p className="font-mono font-bold text-sm text-slate-200">{m.currentBagSerialNumber}</p>
+                                <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{m.name}</p>
+                              </div>
                             </div>
-                            <div>
-                              <p className="font-mono font-bold text-sm text-slate-200">{m.currentBagSerialNumber}</p>
-                              <p className="text-[10px] text-blue-400 font-bold uppercase tracking-widest">{m.name}</p>
+                            <div className="flex flex-col items-end">
+                              <span className="text-[8px] font-bold text-slate-500 uppercase tracking-widest mb-1">Passes</span>
+                              <div className="flex items-center gap-2">
+                                <button 
+                                  onClick={() => handleDecrementBlowingPasses(m.id)}
+                                  className="w-6 h-6 rounded-lg bg-slate-800 text-slate-400 flex items-center justify-center hover:bg-slate-700 transition-all"
+                                >
+                                  <Minus size={12} />
+                                </button>
+                                <span className="text-sm font-bold text-slate-200">{m.blowingPasses || 1}</span>
+                                <button 
+                                  onClick={() => handleIncrementBlowingPasses(m.id)}
+                                  className="w-6 h-6 rounded-lg bg-blue-500/20 text-blue-400 flex items-center justify-center hover:bg-blue-500/30 transition-all"
+                                >
+                                  <Plus size={12} />
+                                </button>
+                              </div>
                             </div>
                           </div>
                           <div className="flex gap-2">
@@ -1891,6 +2317,7 @@ const Production: React.FC<ProductionProps> = ({
                       <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Product</th>
                       <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Blower</th>
                       <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Bay</th>
+                      <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Passes</th>
                       <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Status</th>
                       {isAdmin && <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Actions</th>}
                     </tr>
@@ -1898,7 +2325,7 @@ const Production: React.FC<ProductionProps> = ({
                   <tbody className="divide-y divide-slate-800/50">
                     {blowingHistory.length === 0 ? (
                       <tr>
-                        <td colSpan={isAdmin ? 7 : 6} className="px-4 py-10 text-center text-slate-600">
+                        <td colSpan={isAdmin ? 8 : 7} className="px-4 py-10 text-center text-slate-600">
                           No blowing records found.
                         </td>
                       </tr>
@@ -1909,7 +2336,14 @@ const Production: React.FC<ProductionProps> = ({
                             {new Date(record.timestamp).toLocaleString()}
                           </td>
                           <td className="px-4 py-4 text-sm font-bold text-slate-200 font-mono">
-                            {record.bagSerialNumber}
+                            <div className="flex flex-col gap-1">
+                              {record.sourceBags.map(sb => (
+                                <span key={sb.id} className="text-[10px] text-slate-400">
+                                  {sb.id} ({sb.usedEntirely ? 'Full' : `${sb.weightUsed}kg`})
+                                </span>
+                              ))}
+                              {record.sourceBags.length === 0 && record.bagSerialNumber}
+                            </div>
                           </td>
                           <td className="px-4 py-4 text-sm text-slate-300">
                             {editingRecordId === record.id ? (
@@ -1953,6 +2387,9 @@ const Production: React.FC<ProductionProps> = ({
                                 className="bg-slate-950 border border-slate-800 rounded px-2 py-1 text-xs outline-none focus:border-blue-500 w-20"
                               />
                             ) : record.bay}
+                          </td>
+                          <td className="px-4 py-4 text-sm text-slate-300 font-bold">
+                            {record.passes}x
                           </td>
                           <td className="px-4 py-4">
                             <span className="px-2 py-1 bg-emerald-500/10 text-emerald-500 rounded text-[10px] font-bold uppercase tracking-widest">

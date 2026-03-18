@@ -12,11 +12,15 @@ import {
   Minus,
   Search,
   PlusCircle,
-  AlertCircle
+  AlertCircle,
+  Play,
+  CheckSquare,
+  ChevronRight
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import WheelDatePicker from './WheelDatePicker';
 import { cn } from '../utils/cn';
+import FibrePageLayout from './FibrePageLayout';
 
 // --- Types ---
 
@@ -86,6 +90,27 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
   const [step, setStep] = useState<'HISTORY' | 'JOB_REG' | 'FIBRE_TYPE' | 'BOX_REG' | 'BOX_SEL' | 'INSPECT'>('HISTORY');
   const [jobs, setJobs] = useState<DeliveryJob[]>(sessions);
   const [fibreTypes, setFibreTypes] = useState<FibreType[]>(products);
+
+  const helpContent = {
+    title: "Fibre Verification Guide",
+    sections: [
+      {
+        title: "1. Workflow Overview",
+        content: "The verification process follows a structured path: Job Registration -> Fibre Type Selection -> Box Registration -> Individual Box Inspection -> Final Job Completion.",
+        icon: <Play size={14} />
+      },
+      {
+        title: "2. Box Inspection",
+        content: "During inspection, count the number of defects found in a specific sample size (usually 100 fibres). The system calculates the percentage automatically.",
+        icon: <ClipboardCheck size={14} />
+      },
+      {
+        title: "3. Conformity",
+        content: "Mark each box as OK or NOT OK based on your quality standards. You can add observations for any anomalies found.",
+        icon: <CheckCircle2 size={14} />
+      }
+    ]
+  };
 
   const [currentJob, setCurrentJob] = useState<Partial<DeliveryJob>>({});
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
@@ -203,24 +228,65 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
     }
   };
 
+  const sidebar = (
+    <div className="space-y-6">
+      {currentJob.id && (
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4">Current Job</h3>
+          <div className="space-y-3">
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-500">Customer:</span>
+              <span className="text-white font-bold">{currentJob.customer || '---'}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-500">PO:</span>
+              <span className="text-white font-bold">{currentJob.po || '---'}</span>
+            </div>
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-500">Boxes:</span>
+              <span className="text-white font-bold">{currentJob.boxes?.length || 0}</span>
+            </div>
+            <div className="pt-4 border-t border-slate-800">
+              <div className="flex justify-between text-[10px] font-bold uppercase text-slate-500 mb-2">
+                <span>Progress</span>
+                <span>{Math.round(((currentJob.boxes?.filter(b => b.inspection).length || 0) / (currentJob.boxes?.length || 1)) * 100)}%</span>
+              </div>
+              <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                <div 
+                  className="h-full bg-emerald-500 transition-all duration-500"
+                  style={{ width: `${((currentJob.boxes?.filter(b => b.inspection).length || 0) / (currentJob.boxes?.length || 1)) * 100}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {step === 'INSPECT' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
+          <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4">Inspection Summary</h3>
+          <div className="space-y-2">
+            {DEFECT_CATEGORIES.map(cat => {
+              const box = currentJob.boxes?.find(b => b.id === selectedBoxId);
+              const count = box?.inspection?.defects[cat.id] || 0;
+              if (count === 0) return null;
+              return (
+                <div key={cat.id} className="flex justify-between text-xs">
+                  <span className="text-slate-500">{cat.label}:</span>
+                  <span className="text-rose-500 font-bold">{count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
   // --- Sub-components for Steps ---
 
   const HistoryView = () => (
-    <div className="max-w-5xl mx-auto space-y-6">
-      <header className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold tracking-tight">Fibre Verification</h2>
-          <p className="text-slate-400">Digitized workflow for finished goods fibre quality inspection.</p>
-        </div>
-        <button 
-          onClick={startNewJob}
-          className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg shadow-emerald-900/20"
-        >
-          <Plus size={20} />
-          New Inspection Job
-        </button>
-      </header>
-
+    <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {jobs.map(job => {
           const fibreType = fibreTypes.find(t => t.id === job.fibreTypeId);
@@ -264,7 +330,7 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
   );
 
   const JobRegistration = () => (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-2xl">
       <button onClick={() => setStep('HISTORY')} className="flex items-center gap-2 text-slate-500 hover:text-white mb-6 transition-colors">
         <ChevronLeft size={20} /> Back to History
       </button>
@@ -336,7 +402,7 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
   );
 
   const FibreTypeSelection = () => (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-4xl">
       <button onClick={() => setStep('JOB_REG')} className="flex items-center gap-2 text-slate-500 hover:text-white mb-6 transition-colors">
         <ChevronLeft size={20} /> Back to Registration
       </button>
@@ -489,7 +555,7 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
   const BoxRegistration = () => {
     const [boxInput, setBoxInput] = useState('');
     return (
-      <div className="max-w-3xl mx-auto">
+      <div className="max-w-3xl">
         <button onClick={() => setStep('FIBRE_TYPE')} className="flex items-center gap-2 text-slate-500 hover:text-white mb-6 transition-colors">
           <ChevronLeft size={20} /> Back to Fibre Type
         </button>
@@ -559,7 +625,7 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
   };
 
   const BoxSelection = () => (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-4xl">
       <div className="flex items-center justify-between mb-8">
         <button onClick={() => setStep('BOX_REG')} className="flex items-center gap-2 text-slate-500 hover:text-white transition-colors">
           <ChevronLeft size={20} /> Back to Box Registration
@@ -650,7 +716,7 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
     };
 
     return (
-      <div className="max-w-6xl mx-auto space-y-6">
+      <div className="space-y-6">
         <div className="flex items-center justify-between">
           <button onClick={() => setStep('BOX_SEL')} className="flex items-center gap-2 text-slate-500 hover:text-white transition-colors">
             <ChevronLeft size={20} /> Back to Box Selection
@@ -661,150 +727,146 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          <div className="lg:col-span-8 space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl">
-              <div className="flex items-center justify-between mb-8">
-                <h3 className="text-2xl font-bold">Step 5: Fibre Inspection</h3>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Quantity Checked</label>
-                    <input 
-                      type="number" 
-                      className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-lg font-bold text-emerald-500 w-32 text-center outline-none focus:ring-2 focus:ring-emerald-500/20"
-                      value={inspection.quantityChecked}
-                      onChange={(e) => setQuantityChecked(e.target.value)}
-                    />
-                  </div>
+        <div className="space-y-6">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl">
+            <div className="flex items-center justify-between mb-8">
+              <h3 className="text-2xl font-bold">Step 5: Fibre Inspection</h3>
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1">Quantity Checked</label>
+                  <input 
+                    type="number" 
+                    className="bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-lg font-bold text-emerald-500 w-32 text-center outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    value={inspection.quantityChecked}
+                    onChange={(e) => setQuantityChecked(e.target.value)}
+                  />
                 </div>
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8">
-                {DEFECT_CATEGORIES.map(cat => {
-                  const count = inspection.defects[cat.id] || 0;
-                  const percentage = ((count / inspection.quantityChecked) * 100).toFixed(2);
-                  
-                  if (cat.isBinary) {
-                    return (
-                      <div key={cat.id} className="space-y-3">
-                        <label className="text-sm font-bold text-slate-300">{cat.label}</label>
-                        <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800">
-                          <button 
-                            onClick={() => setDefect(cat.id, "1")}
-                            className={cn(
-                              "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
-                              count === 1 ? "bg-emerald-600 text-white" : "text-slate-500 hover:text-slate-300"
-                            )}
-                          >
-                            Yes
-                          </button>
-                          <button 
-                            onClick={() => setDefect(cat.id, "0")}
-                            className={cn(
-                              "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
-                              count === 0 ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"
-                            )}
-                          >
-                            No
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  }
-
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8">
+              {DEFECT_CATEGORIES.map(cat => {
+                const count = inspection.defects[cat.id] || 0;
+                const percentage = ((count / inspection.quantityChecked) * 100).toFixed(2);
+                
+                if (cat.isBinary) {
                   return (
                     <div key={cat.id} className="space-y-3">
-                      <div className="flex justify-between items-end">
-                        <label className="text-sm font-bold text-slate-300">{cat.label}</label>
-                        <span className="text-[10px] font-mono text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                          {percentage}%
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-3">
+                      <label className="text-sm font-bold text-slate-300">{cat.label}</label>
+                      <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800">
                         <button 
-                          onClick={() => updateDefect(cat.id, -1)}
-                          className="w-12 h-12 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all active:scale-90"
+                          onClick={() => setDefect(cat.id, "1")}
+                          className={cn(
+                            "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
+                            count === 1 ? "bg-emerald-600 text-white" : "text-slate-500 hover:text-slate-300"
+                          )}
                         >
-                          <Minus size={20} />
+                          Yes
                         </button>
-                        <input 
-                          type="number" 
-                          className="flex-1 bg-slate-950 border border-slate-800 rounded-xl py-3 text-center text-xl font-bold outline-none focus:ring-2 focus:ring-emerald-500/20"
-                          value={count}
-                          onChange={(e) => setDefect(cat.id, e.target.value)}
-                        />
                         <button 
-                          onClick={() => updateDefect(cat.id, 1)}
-                          className="w-12 h-12 flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all active:scale-90"
+                          onClick={() => setDefect(cat.id, "0")}
+                          className={cn(
+                            "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
+                            count === 0 ? "bg-slate-800 text-white" : "text-slate-500 hover:text-slate-300"
+                          )}
                         >
-                          <Plus size={20} />
+                          No
                         </button>
                       </div>
                     </div>
                   );
-                })}
-              </div>
+                }
+
+                return (
+                  <div key={cat.id} className="space-y-3">
+                    <div className="flex justify-between items-end">
+                      <label className="text-sm font-bold text-slate-300">{cat.label}</label>
+                      <span className="text-[10px] font-mono text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+                        {percentage}%
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button 
+                        onClick={() => updateDefect(cat.id, -1)}
+                        className="w-12 h-12 flex items-center justify-center bg-slate-800 hover:bg-slate-700 text-white rounded-xl transition-all active:scale-90"
+                      >
+                        <Minus size={20} />
+                      </button>
+                      <input 
+                        type="number" 
+                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl py-3 text-center text-xl font-bold outline-none focus:ring-2 focus:ring-emerald-500/20"
+                        value={count}
+                        onChange={(e) => setDefect(cat.id, e.target.value)}
+                      />
+                      <button 
+                        onClick={() => updateDefect(cat.id, 1)}
+                        className="w-12 h-12 flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl transition-all active:scale-90"
+                      >
+                        <Plus size={20} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          <div className="lg:col-span-4 space-y-6">
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
-              <h4 className="font-bold mb-4 flex items-center gap-2">
-                <AlertCircle className="text-amber-500" size={18} />
-                Conformity & Notes
-              </h4>
-              <div className="space-y-6">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-3">Overall Result</label>
-                  <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800">
-                    <button 
-                      onClick={() => updateBoxInspection(selectedBoxId!, { ...inspection, conformity: true })}
-                      className={cn(
-                        "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
-                        inspection.conformity ? "bg-emerald-600 text-white" : "text-slate-500 hover:text-slate-300"
-                      )}
-                    >
-                      OK
-                    </button>
-                    <button 
-                      onClick={() => updateBoxInspection(selectedBoxId!, { ...inspection, conformity: false })}
-                      className={cn(
-                        "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
-                        !inspection.conformity ? "bg-red-600 text-white" : "text-slate-500 hover:text-slate-300"
-                      )}
-                    >
-                      NOT OK
-                    </button>
-                  </div>
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6">
+            <h4 className="font-bold mb-4 flex items-center gap-2">
+              <AlertCircle className="text-amber-500" size={18} />
+              Conformity & Notes
+            </h4>
+            <div className="space-y-6">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-3">Overall Result</label>
+                <div className="flex gap-2 p-1 bg-slate-950 rounded-xl border border-slate-800">
+                  <button 
+                    onClick={() => updateBoxInspection(selectedBoxId!, { ...inspection, conformity: true })}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
+                      inspection.conformity ? "bg-emerald-600 text-white" : "text-slate-500 hover:text-slate-300"
+                    )}
+                  >
+                    OK
+                  </button>
+                  <button 
+                    onClick={() => updateBoxInspection(selectedBoxId!, { ...inspection, conformity: false })}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
+                      !inspection.conformity ? "bg-red-600 text-white" : "text-slate-500 hover:text-slate-300"
+                    )}
+                  >
+                    NOT OK
+                  </button>
                 </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-2">Observations</label>
-                  <textarea 
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[150px]"
-                    placeholder="Add any additional notes here..."
-                    value={inspection.observations}
-                    onChange={(e) => updateBoxInspection(selectedBoxId!, { ...inspection, observations: e.target.value })}
-                  />
-                </div>
-
-                <button 
-                  onClick={() => setStep('BOX_SEL')}
-                  className="w-full bg-slate-100 hover:bg-white text-slate-950 py-4 rounded-2xl font-bold transition-all flex items-center justify-center gap-2"
-                >
-                  <CheckCircle2 size={20} /> Finish Box Inspection
-                </button>
               </div>
-            </div>
 
-            {currentJob.boxes?.every(b => b.inspection) && (
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-2">Observations</label>
+                <textarea 
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20 min-h-[150px]"
+                  placeholder="Add any additional notes here..."
+                  value={inspection.observations}
+                  onChange={(e) => updateBoxInspection(selectedBoxId!, { ...inspection, observations: e.target.value })}
+                />
+              </div>
+
               <button 
-                onClick={saveJob}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-2xl font-bold transition-all shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2"
+                onClick={() => setStep('BOX_SEL')}
+                className="w-full bg-slate-100 hover:bg-white text-slate-950 py-4 rounded-2xl font-bold transition-all flex items-center justify-center gap-2"
               >
-                <Save size={20} /> Complete Full Job
+                <CheckCircle2 size={20} /> Finish Box Inspection
               </button>
-            )}
+
+              {currentJob.boxes?.every(b => b.inspection) && (
+                <button 
+                  onClick={saveJob}
+                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-4 rounded-2xl font-bold transition-all shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2"
+                >
+                  <Save size={20} /> Complete Full Job
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -813,13 +875,29 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
 
   // --- Main Render ---
 
-  switch (step) {
-    case 'HISTORY': return <HistoryView />;
-    case 'JOB_REG': return <JobRegistration />;
-    case 'FIBRE_TYPE': return <FibreTypeSelection />;
-    case 'BOX_REG': return <BoxRegistration />;
-    case 'BOX_SEL': return <BoxSelection />;
-    case 'INSPECT': return <InspectionForm />;
-    default: return <HistoryView />;
-  }
+  return (
+    <FibrePageLayout
+      title="Fibre Verification"
+      subtitle="Digitized workflow for finished goods fibre quality inspection."
+      icon={<CheckSquare className="text-emerald-500" size={24} />}
+      helpContent={helpContent}
+      sidebar={sidebar}
+      actions={step === 'HISTORY' ? (
+        <button 
+          onClick={startNewJob}
+          className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-3 rounded-xl font-bold transition-all shadow-lg shadow-emerald-900/20"
+        >
+          <Plus size={20} />
+          New Inspection Job
+        </button>
+      ) : null}
+    >
+      {step === 'HISTORY' && <HistoryView />}
+      {step === 'JOB_REG' && <JobRegistration />}
+      {step === 'FIBRE_TYPE' && <FibreTypeSelection />}
+      {step === 'BOX_REG' && <BoxRegistration />}
+      {step === 'BOX_SEL' && <BoxSelection />}
+      {step === 'INSPECT' && <InspectionForm />}
+    </FibrePageLayout>
+  );
 }

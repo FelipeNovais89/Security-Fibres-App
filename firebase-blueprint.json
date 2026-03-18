@@ -1,0 +1,212 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "A customer of the factory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "A product manufactured in the factory",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "colour": { "type": "string" },
+        "colorVisibility": { "type": "string" },
+        "cutType": { "type": "string" },
+        "length": { "type": "string" },
+        "pitch": { "type": "string" },
+        "gsm": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "PaperReel": {
+      "title": "Paper Reel",
+      "description": "Raw material paper reel",
+      "type": "object",
+      "properties": {
+        "serialNumber": { "type": "string" },
+        "supplier": { "type": "string" },
+        "weight": { "type": "number" },
+        "gsm": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    },
+    "InkCan": {
+      "title": "Ink Can",
+      "description": "Raw material ink can",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "colour": { "type": "string" },
+        "weight": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    },
+    "PrintedPaperReel": {
+      "title": "Printed Paper Reel",
+      "description": "A paper reel that has been printed",
+      "type": "object",
+      "properties": {
+        "serialNumber": { "type": "string" },
+        "sourceReelSerial": { "type": "string" },
+        "customer": { "type": "string" },
+        "colour": { "type": "string" },
+        "productCode": { "type": "string" },
+        "weight": { "type": "number" },
+        "printingDate": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    },
+    "FreshCutBag": {
+      "title": "Fresh Cut Bag",
+      "description": "A bag that has been cut from a printed reel",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "parentReelSerial": { "type": "string" },
+        "customer": { "type": "string" },
+        "colour": { "type": "string" },
+        "productCode": { "type": "string" },
+        "weight": { "type": "number" },
+        "cuttingDate": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    },
+    "BlownBag": {
+      "title": "Blown Bag",
+      "description": "A bag that has been blown",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "parentBagIds": { "type": "array", "items": { "type": "string" } },
+        "customer": { "type": "string" },
+        "colour": { "type": "string" },
+        "productCode": { "type": "string" },
+        "weight": { "type": "number" },
+        "blowingDate": { "type": "number" },
+        "blowingPasses": { "type": "number" },
+        "machineId": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "ShakenBag": {
+      "title": "Shaken Bag",
+      "description": "A bag that has been shaken",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customer": { "type": "string" },
+        "colour": { "type": "string" },
+        "productCode": { "type": "string" },
+        "weight": { "type": "number" },
+        "shakingDate": { "type": "number" },
+        "machineId": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "FinalBox": {
+      "title": "Final Box",
+      "description": "A final box containing bags",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "boxNumber": { "type": "string" },
+        "customer": { "type": "string" },
+        "productCode": { "type": "string" },
+        "totalWeight": { "type": "number" },
+        "status": { "type": "string" }
+      }
+    },
+    "AppData": {
+      "title": "App Data",
+      "description": "Generic key-value store for app state",
+      "type": "object",
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" }
+      }
+    },
+    "FibreAnalysis": {
+      "title": "Fibre Analysis",
+      "description": "Results of a fibre analysis session",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "operatorId": { "type": "string" },
+        "operatorName": { "type": "string" },
+        "cameraId": { "type": "string" },
+        "calibrationId": { "type": "string" },
+        "pixelsPerMm": { "type": "number" },
+        "originalImage": { "type": "string" },
+        "status": { "type": "string" }
+      }
+    },
+    "FibreObject": {
+      "title": "Fibre Object",
+      "description": "A single detected fibre object",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "analysisId": { "type": "string" },
+        "suggestedLabel": { "type": "string" },
+        "status": { "type": "string" },
+        "lengthMm": { "type": "number" },
+        "widthMm": { "type": "number" },
+        "areaPx": { "type": "number" }
+      }
+    },
+    "DatasetSample": {
+      "title": "Dataset Sample",
+      "description": "A labeled image for training",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "label": { "type": "string" },
+        "image": { "type": "string" }
+      }
+    },
+    "Calibration": {
+      "title": "Calibration",
+      "description": "Camera calibration data",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "cameraId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "pixelsPerMm": { "type": "number" },
+        "mmPerPixel": { "type": "number" }
+      }
+    }
+  },
+  "firestore": {
+    "/app_data/{key}": {
+      "schema": "AppData",
+      "description": "Stores all application data in a key-value format"
+    },
+    "/fibre_analyses/{id}": {
+      "schema": "FibreAnalysis",
+      "description": "Stores fibre analysis session metadata"
+    },
+    "/fibre_objects/{id}": {
+      "schema": "FibreObject",
+      "description": "Stores individual detected fibre objects"
+    },
+    "/fibre_training_dataset/{id}": {
+      "schema": "DatasetSample",
+      "description": "Stores labeled samples for machine learning"
+    },
+    "/fibre_calibrations/{id}": {
+      "schema": "Calibration",
+      "description": "Stores camera calibration factors"
+    }
+  }
+}

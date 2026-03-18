@@ -61,19 +61,26 @@ export interface InkCan {
 
 export interface PrintedPaperReel {
   serialNumber: string;
-  productCode: string;
+  customer: string;
+  colour: string;
+  productCode?: string;
   sourceReelSerial: string;
   inksUsed: { serial: string; consumption: number }[];
   finalWeight: number;
   productionDate: number;
   status: PrintedReelStatus;
+  defects?: string;
+  defectsQty?: number;
+  usedEntireSourceReel: boolean;
   notes?: string;
 }
 
 export interface FreshCutBag {
   id: string;
   parentReelSerial: string;
-  productCode: string;
+  customer: string;
+  colour: string;
+  productCode?: string;
   weight: number;
   cuttingDate: number;
   status: FreshCutBagStatus;
@@ -82,13 +89,17 @@ export interface FreshCutBag {
 
 export interface BlownBag {
   id: string;
-  parentBagId: string;
-  productCode: string;
+  parentBagIds: string[];
+  sourceBags: { id: string; weightUsed: number; usedEntirely: boolean }[];
+  customer: string;
+  colour: string;
+  productCode?: string;
   weight: number;
   blowingDate: number;
   startTime: number;
   finishTime: number;
   duration: number;
+  blowingPasses?: number;
   machineId?: string;
   status: BlownBagStatus;
   notes?: string;
@@ -97,7 +108,9 @@ export interface BlownBag {
 export interface ShakenBag {
   id: string;
   parentBlownBagId: string;
-  productCode: string;
+  customer: string;
+  colour: string;
+  productCode?: string;
   usableWeight: number;
   wasteWeight: number;
   dustWeight?: number;
@@ -115,7 +128,9 @@ export interface ShakenBag {
 
 export interface FinalBox {
   boxNumber: string;
-  productCode: string;
+  customer: string;
+  colour: string;
+  productCode?: string;
   bags: { bagId: string; weightAdded: number; type: 'Shaken' }[];
   totalWeight: number;
   packingDate: number;

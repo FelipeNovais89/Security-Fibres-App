@@ -1,0 +1,67 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: app_data
+    // Document ID: {key}
+    // Fields:
+    //   - value: string (required) - JSON stringified data
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "felipeatnovais@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidAppData(data) {
+      return data.value is string && data.value.size() < 1048576; // Max 1MB
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /app_data/{key} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && hasOnlyAllowedFields(['value']) && isValidAppData(request.resource.data);
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow write: if isAdmin();
+    }
+
+    match /fibre_analyses/{id} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /fibre_objects/{id} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /fibre_training_dataset/{id} {
+      allow read, write: if isAuthenticated();
+    }
+
+    match /fibre_calibrations/{id} {
+      allow read, write: if isAuthenticated();
+    }
+  }
+}

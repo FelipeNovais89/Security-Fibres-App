@@ -1,5 +1,5 @@
 {
   "name": "FiberQC Command Center",
   "description": "Enterprise resource control and quality management system for Security Fibres UK Limited.",
-  "requestFramePermissions": []
+  "requestFramePermissions": ["camera"]
 }

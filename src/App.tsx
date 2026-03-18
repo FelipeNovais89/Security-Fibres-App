@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import * as React from 'react';
+import { useState, useRef, Component } from 'react';
 import { 
   Printer, 
   CheckSquare, 
@@ -8,7 +9,10 @@ import {
   Box, 
   QrCode, 
   ChevronRight,
+  ChevronDown,
   Factory,
+  Truck,
+  Package,
   Menu,
   X,
   Database,
@@ -24,7 +28,15 @@ import {
   BluetoothOff,
   Cloud,
   CloudOff,
-  RefreshCw
+  RefreshCw,
+  FileText,
+  Tag,
+  ClipboardList,
+  Layers,
+  AlertTriangle,
+  LogOut,
+  User as UserIcon,
+  Eye
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { clsx, type ClassValue } from 'clsx';
@@ -34,11 +46,74 @@ import { QRCodeSVG } from 'qrcode.react';
 import { toPng } from 'html-to-image';
 import { jsPDF } from 'jspdf';
 import { motion, AnimatePresence } from 'motion/react';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { auth, signInWithGoogle, logout, db, OperationType, handleFirestoreError } from './firebase';
 import FibreVerification from './components/FibreVerification';
+import MicroscopeFibreAnalysis from './components/MicroscopeFibreAnalysis';
+import { FibreModule } from './types/fibre';
+
+// --- Error Boundary ---
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: any;
+}
+
+class ErrorBoundary extends (Component as any) {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if ((this as any).state.hasError) {
+      let errorMessage = "Something went wrong.";
+      try {
+        const parsed = JSON.parse((this as any).state.error.message);
+        if (parsed.error) errorMessage = `Firestore Error: ${parsed.error} (${parsed.operationType} on ${parsed.path})`;
+      } catch (e) {
+        errorMessage = (this as any).state.error.message || String((this as any).state.error);
+      }
+
+      return (
+        <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 p-8 rounded-2xl max-w-md w-full text-center shadow-2xl">
+            <div className="w-16 h-16 bg-rose-500/10 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-6">
+              <AlertTriangle size={32} />
+            </div>
+            <h2 className="text-xl font-bold text-white mb-2">Application Error</h2>
+            <p className="text-slate-400 text-sm mb-6">{errorMessage}</p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-xl transition-all shadow-lg shadow-emerald-900/20"
+            >
+              Reload Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (this as any).props.children;
+  }
+}
 import WheelDatePicker from './components/WheelDatePicker';
 import Home from './components/Home';
 import TimeClock from './components/TimeClock';
 import Production from './components/Production';
+import Logistics from './components/Logistics';
 import { cn } from './utils/cn';
 import { bluetoothService, BluetoothDiagnostics } from './services/bluetoothService';
 import { 
@@ -74,19 +149,28 @@ interface Product {
 
 // --- Components ---
 
+interface SidebarItemProps {
+  key?: string | number;
+  icon?: any;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  hasChildren?: boolean;
+  isExpanded?: boolean;
+  isChild?: boolean;
+}
+
 const SidebarItem = ({ 
   icon: Icon, 
   label, 
   active, 
   onClick, 
-  disabled = false 
-}: { 
-  icon: any, 
-  label: string, 
-  active: boolean, 
-  onClick: () => void,
-  disabled?: boolean
-}) => (
+  disabled = false,
+  hasChildren = false,
+  isExpanded = false,
+  isChild = false
+}: SidebarItemProps) => (
   <button
     onClick={onClick}
     disabled={disabled}
@@ -94,13 +178,20 @@ const SidebarItem = ({
       "w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200",
       active 
         ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20" 
-        : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
+        : isChild 
+          ? "text-slate-400 hover:text-slate-200 pl-11"
+          : "text-slate-400 hover:bg-slate-800 hover:text-slate-200",
       disabled && "opacity-50 cursor-not-allowed hover:bg-transparent hover:text-slate-400"
     )}
   >
-    <Icon size={20} />
-    <span className="font-medium">{label}</span>
+    {Icon && <Icon size={isChild ? 16 : 20} />}
+    <span className={cn("font-medium", isChild ? "text-sm" : "text-base")}>{label}</span>
     {disabled && <span className="ml-auto text-[10px] uppercase tracking-wider opacity-60">Soon</span>}
+    {hasChildren && (
+      <span className="ml-auto text-slate-500">
+        {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+      </span>
+    )}
   </button>
 );
 
@@ -420,13 +511,59 @@ const ProductCheckLabel = ({ data, config }: { data: any, config: any }) => {
 // --- Main App ---
 
 export default function App() {
-  const [activeModule, setActiveModule] = useState<'home' | 'labels' | 'fibre' | 'ink' | 'database' | 'timeclock' | 'production' | 'logistics' | 'engineering' | 'traceability'>('home');
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [activeModule, setActiveModule] = useState<FibreModule>('home');
   const [activeSubModule, setActiveSubModule] = useState<string>('');
+  const [expandedMenus, setExpandedMenus] = useState<string[]>([]);
   const [labelType, setLabelType] = useState<'store' | 'product'>('store');
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [isPrinterModalOpen, setIsPrinterModalOpen] = useState(false);
+
+  const toggleMenu = (id: string) => {
+    setExpandedMenus(prev => 
+      prev.includes(id) ? prev.filter(m => m !== id) : [...prev, id]
+    );
+  };
+
+  const MENU_ITEMS = [
+    { id: 'home', label: 'Home', icon: LayoutDashboard },
+    { id: 'production', label: 'Production', icon: Factory },
+    { 
+      id: 'logistics', 
+      label: 'Logistics', 
+      icon: Truck,
+      children: [
+        { id: 'stock_management', label: 'Stock Management', icon: Layers },
+        { id: 'receiving', label: 'Receiving', icon: Package },
+        { id: 'dispatch', label: 'Dispatch', icon: Box, disabled: true },
+      ]
+    },
+    {
+      id: 'labels',
+      label: 'Label Printing',
+      icon: Printer,
+      children: [
+        { id: 'status', label: 'Printer Status', icon: Bluetooth },
+        { id: 'queue', label: 'Print Queue', icon: ClipboardList, disabled: true },
+        { id: 'templates', label: 'Label Templates', icon: Tag, disabled: true },
+      ]
+    },
+    {
+      id: 'database',
+      label: 'Database',
+      icon: Database,
+      children: [
+        { id: 'specs', label: 'Customers & Products', icon: ClipboardList },
+        { id: 'fibre', label: 'Fibre Verification', icon: CheckSquare },
+        { id: 'ink', label: 'Ink Check', icon: Droplets },
+        { id: 'fibre-analysis', label: 'Microscope Lab', icon: Eye },
+      ]
+    },
+    { id: 'timeclock', label: 'Time Clock', icon: Clock },
+  ];
   
   // --- Factory Flow States ---
   const [rawMaterialCodes, setRawMaterialCodes] = useState<RawMaterialCode[]>(() => {
@@ -675,6 +812,26 @@ export default function App() {
   const [newProductName, setNewProductName] = useState('');
   const [showAllCustomers, setShowAllCustomers] = useState(false);
   const [showAllProducts, setShowAllProducts] = useState(false);
+
+  // --- Database Form States ---
+  const [newRMCode, setNewRMCode] = useState('');
+  const [newRMName, setNewRMName] = useState('');
+  const [newRMType, setNewRMType] = useState<'Paper Reel' | 'Ink' | 'Other'>('Paper Reel');
+  const [newRMSupplier, setNewRMSupplier] = useState('');
+  
+  const [newPCCode, setNewPCCode] = useState('');
+  const [newPCName, setNewPCName] = useState('');
+  const [newPCDescription, setNewPCDescription] = useState('');
+  const [newPCNumColours, setNewPCNumColours] = useState('1');
+  const [newPCDefaultGsm, setNewPCDefaultGsm] = useState('60');
+
+  const [newBOMProductCode, setNewBOMProductCode] = useState('');
+  const [newBOMRequiredGsm, setNewBOMRequiredGsm] = useState('');
+  const [newBOMInks, setNewBOMInks] = useState<string[]>([]);
+  
+  const [showAllRMCodes, setShowAllRMCodes] = useState(false);
+  const [showAllProductCodes, setShowAllProductCodes] = useState(false);
+  const [showAllBOMs, setShowAllBOMs] = useState(false);
   
   const [customers, setCustomers] = useState<Customer[]>(() => {
     const saved = localStorage.getItem('fiberqc_customers');
@@ -703,49 +860,60 @@ export default function App() {
     return [...data].sort((a, b) => a.name.localeCompare(b.name));
   });
 
-  // --- Sync Logic ---
-  // Load data from server on mount
+  // --- Auth Logic ---
   React.useEffect(() => {
-    const loadData = async () => {
-      setSyncStatus('syncing');
-      try {
-        const response = await fetch('/api/data');
-        if (response.ok) {
-          const data = await response.json();
-          if (Object.keys(data).length > 0) {
-            if (data.fiberqc_rm_codes) setRawMaterialCodes(data.fiberqc_rm_codes);
-            if (data.fiberqc_product_codes) setProductCodes(data.fiberqc_product_codes);
-            if (data.fiberqc_boms) setBoms(data.fiberqc_boms);
-            if (data.fiberqc_paper_reels) setPaperReels(data.fiberqc_paper_reels);
-            if (data.fiberqc_ink_cans) setInkCans(data.fiberqc_ink_cans);
-            if (data.fiberqc_printed_reels) setPrintedReels(data.fiberqc_printed_reels);
-            if (data.fiberqc_fresh_cut_bags) setFreshCutBags(data.fiberqc_fresh_cut_bags);
-            if (data.fiberqc_blown_bags) setBlownBags(data.fiberqc_blown_bags);
-            if (data.fiberqc_shaken_bags) setShakenBags(data.fiberqc_shaken_bags);
-            if (data.fiberqc_final_boxes) setFinalBoxes(data.fiberqc_final_boxes);
-            if (data.fiberqc_fibre_checks) setFibreChecks(data.fiberqc_fibre_checks);
-            if (data.fiberqc_store_box_config) setStoreBoxConfig(data.fiberqc_store_box_config);
-            if (data.fiberqc_product_check_config) setProductCheckConfig(data.fiberqc_product_check_config);
-            if (data.fiberqc_customers) setCustomers(data.fiberqc_customers);
-            if (data.fiberqc_products) setProducts(data.fiberqc_products);
-            setSyncStatus('synced');
-          } else {
-            setSyncStatus('idle');
-          }
-        }
-      } catch (error) {
-        console.error("Failed to load data from server:", error);
-        setSyncStatus('error');
-      } finally {
-        setIsDataLoaded(true);
-      }
-    };
-    loadData();
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
   }, []);
 
-  // Save data to server and localStorage (debounced)
+  // --- Sync Logic ---
+  // Load data from Firestore on mount
   React.useEffect(() => {
-    if (!isDataLoaded) return;
+    if (!user) return;
+
+    setSyncStatus('syncing');
+    const docRef = doc(db, 'app_data', 'global_state');
+    
+    const unsubscribe = onSnapshot(docRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data().value ? JSON.parse(docSnap.data().value) : {};
+        if (Object.keys(data).length > 0) {
+          if (data.fiberqc_rm_codes) setRawMaterialCodes(data.fiberqc_rm_codes);
+          if (data.fiberqc_product_codes) setProductCodes(data.fiberqc_product_codes);
+          if (data.fiberqc_boms) setBoms(data.fiberqc_boms);
+          if (data.fiberqc_paper_reels) setPaperReels(data.fiberqc_paper_reels);
+          if (data.fiberqc_ink_cans) setInkCans(data.fiberqc_ink_cans);
+          if (data.fiberqc_printed_reels) setPrintedReels(data.fiberqc_printed_reels);
+          if (data.fiberqc_fresh_cut_bags) setFreshCutBags(data.fiberqc_fresh_cut_bags);
+          if (data.fiberqc_blown_bags) setBlownBags(data.fiberqc_blown_bags);
+          if (data.fiberqc_shaken_bags) setShakenBags(data.fiberqc_shaken_bags);
+          if (data.fiberqc_final_boxes) setFinalBoxes(data.fiberqc_final_boxes);
+          if (data.fiberqc_fibre_checks) setFibreChecks(data.fiberqc_fibre_checks);
+          if (data.fiberqc_store_box_config) setStoreBoxConfig(data.fiberqc_store_box_config);
+          if (data.fiberqc_product_check_config) setProductCheckConfig(data.fiberqc_product_check_config);
+          if (data.fiberqc_customers) setCustomers(data.fiberqc_customers);
+          if (data.fiberqc_products) setProducts(data.fiberqc_products);
+        }
+        setSyncStatus('synced');
+      } else {
+        setSyncStatus('idle');
+      }
+      setIsDataLoaded(true);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'app_data/global_state');
+      setSyncStatus('error');
+      setIsDataLoaded(true);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  // Save data to Firestore (debounced)
+  React.useEffect(() => {
+    if (!isDataLoaded || !user) return;
 
     const timer = setTimeout(async () => {
       setSyncStatus('syncing');
@@ -773,25 +941,18 @@ export default function App() {
       });
 
       try {
-        const response = await fetch('/api/data/batch', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(allData),
-        });
-        if (response.ok) {
-          setSyncStatus('synced');
-        } else {
-          setSyncStatus('error');
-        }
+        const docRef = doc(db, 'app_data', 'global_state');
+        await setDoc(docRef, { value: JSON.stringify(allData) });
+        setSyncStatus('synced');
       } catch (error) {
-        console.error("Failed to save data to server:", error);
+        handleFirestoreError(error, OperationType.WRITE, 'app_data/global_state');
         setSyncStatus('error');
       }
-    }, 1500); // 1.5 second debounce
+    }, 2000); // 2 second debounce to avoid excessive writes
 
     return () => clearTimeout(timer);
   }, [
-    isDataLoaded,
+    isDataLoaded, user,
     rawMaterialCodes, productCodes, boms, paperReels, inkCans, 
     printedReels, freshCutBags, blownBags, shakenBags, finalBoxes, 
     fibreChecks, storeBoxConfig, productCheckConfig, customers, products
@@ -849,8 +1010,46 @@ export default function App() {
     }
   };
 
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <RefreshCw className="text-emerald-500 animate-spin" size={32} />
+          <p className="text-slate-500 font-medium animate-pulse">Initializing FiberQC...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-3xl shadow-2xl text-center">
+          <div className="bg-emerald-600 p-4 rounded-2xl shadow-lg shadow-emerald-900/20 w-fit mx-auto mb-6">
+            <Factory className="text-white" size={48} />
+          </div>
+          <h1 className="text-3xl font-bold text-white mb-2 tracking-tight">FiberQC</h1>
+          <p className="text-slate-400 mb-8">Production & Quality Control Management System</p>
+          
+          <button 
+            onClick={signInWithGoogle}
+            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-100 text-slate-900 font-bold py-4 rounded-2xl transition-all shadow-xl"
+          >
+            <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
+            Sign in with Google
+          </button>
+          
+          <p className="mt-8 text-[10px] text-slate-600 uppercase tracking-widest font-bold">
+            Security Fibres UK Limited • Confidential
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 font-sans selection:bg-emerald-500/30 overflow-hidden">
+    <ErrorBoundary>
+      <div className="flex h-screen bg-slate-950 text-slate-100 font-sans selection:bg-emerald-500/30 overflow-hidden">
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
         <div 
@@ -882,109 +1081,132 @@ export default function App() {
           </button>
         </div>
 
-        <nav className="flex flex-col gap-2">
-          <SidebarItem 
-            icon={LayoutDashboard} 
-            label="Home" 
-            active={activeModule === 'home'} 
-            onClick={() => {
-              setActiveModule('home');
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={Factory} 
-            label="Production" 
-            active={activeModule === 'production'} 
-            onClick={() => {
-              setActiveModule('production');
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={Printer} 
-            label="Label Printing" 
-            active={activeModule === 'labels'} 
-            onClick={() => {
-              setActiveModule('labels');
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={Bluetooth} 
-            label="Printer Status" 
-            active={isPrinterModalOpen} 
-            onClick={() => {
-              setIsPrinterModalOpen(true);
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={Database} 
-            label="Database" 
-            active={activeModule === 'database'} 
-            onClick={() => {
-              setActiveModule('database');
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={CheckSquare} 
-            label="Fibre Verification" 
-            active={activeModule === 'fibre'} 
-            onClick={() => {
-              setActiveModule('fibre');
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={Clock} 
-            label="Time Clock" 
-            active={activeModule === 'timeclock'} 
-            onClick={() => {
-              setActiveModule('timeclock');
-              setIsSidebarOpen(false);
-            }} 
-          />
-          <SidebarItem 
-            icon={Droplets} 
-            label="Ink Check" 
-            active={activeModule === 'ink'} 
-            onClick={() => {}} 
-            disabled
-          />
+        <nav className="flex flex-col gap-1 overflow-y-auto no-scrollbar pb-8">
+          {MENU_ITEMS.map((item) => (
+            <div key={item.id} className="flex flex-col gap-1">
+              <SidebarItem 
+                icon={item.icon} 
+                label={item.label} 
+                active={activeModule === item.id && !item.children} 
+                hasChildren={!!item.children}
+                isExpanded={expandedMenus.includes(item.id)}
+                onClick={() => {
+                  if (item.children) {
+                    toggleMenu(item.id);
+                  } else {
+                    setActiveModule(item.id as any);
+                    setActiveSubModule('');
+                    setIsSidebarOpen(false);
+                  }
+                }} 
+              />
+              
+              {item.children && (
+                <AnimatePresence>
+                  {expandedMenus.includes(item.id) && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="overflow-hidden flex flex-col gap-1"
+                    >
+                      {item.children.map((child) => (
+                        <SidebarItem 
+                          key={child.id}
+                          label={child.label}
+                          isChild
+                          active={
+                            (child.id === 'status' && isPrinterModalOpen) ||
+                            (activeModule === item.id && activeSubModule === child.id) ||
+                            (item.id === 'database' && (
+                              (child.id === 'specs' && activeModule === 'database') ||
+                              (child.id === 'fibre' && activeModule === 'fibre') ||
+                              (child.id === 'ink' && activeModule === 'ink')
+                            ))
+                          }
+                          disabled={child.disabled}
+                          onClick={() => {
+                            if (child.id === 'status') {
+                              setIsPrinterModalOpen(true);
+                            } else if (item.id === 'database') {
+                              if (child.id === 'specs') {
+                                setActiveModule('database');
+                              } else {
+                                setActiveModule(child.id as any);
+                              }
+                              setActiveSubModule('');
+                            } else {
+                              setActiveModule(item.id as any);
+                              setActiveSubModule(child.id);
+                            }
+                            setIsSidebarOpen(false);
+                          }}
+                        />
+                      ))}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              )}
+            </div>
+          ))}
         </nav>
 
-        <div className="mt-auto p-4 bg-slate-800/50 rounded-xl border border-slate-700/50">
-          <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2">Cloud Sync</p>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {syncStatus === 'syncing' ? (
-                <RefreshCw className="text-blue-400 animate-spin" size={14} />
-              ) : syncStatus === 'synced' ? (
-                <Cloud className="text-emerald-400" size={14} />
-              ) : syncStatus === 'error' ? (
-                <CloudOff className="text-rose-400" size={14} />
-              ) : (
-                <Cloud className="text-slate-500" size={14} />
-              )}
-              <span className={cn(
-                "text-[10px] font-bold uppercase tracking-wider",
-                syncStatus === 'syncing' ? "text-blue-400" :
-                syncStatus === 'synced' ? "text-emerald-400" :
-                syncStatus === 'error' ? "text-rose-400" : "text-slate-500"
-              )}>
-                {syncStatus === 'syncing' ? 'Syncing...' :
-                 syncStatus === 'synced' ? 'Synced' :
-                 syncStatus === 'error' ? 'Sync Error' : 'Offline'}
-              </span>
+        <div className="mt-auto p-4 bg-slate-800/50 rounded-xl border border-slate-700/50 space-y-4">
+          <div>
+            <p className="text-[10px] uppercase tracking-widest text-slate-500 font-bold mb-2">Cloud Sync</p>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {syncStatus === 'syncing' ? (
+                  <RefreshCw className="text-blue-400 animate-spin" size={14} />
+                ) : syncStatus === 'synced' ? (
+                  <Cloud className="text-emerald-400" size={14} />
+                ) : syncStatus === 'error' ? (
+                  <CloudOff className="text-rose-400" size={14} />
+                ) : (
+                  <Cloud className="text-slate-500" size={14} />
+                )}
+                <span className={cn(
+                  "text-[10px] font-bold uppercase tracking-wider",
+                  syncStatus === 'syncing' ? "text-blue-400" :
+                  syncStatus === 'synced' ? "text-emerald-400" :
+                  syncStatus === 'error' ? "text-rose-400" : "text-slate-500"
+                )}>
+                  {syncStatus === 'syncing' ? 'Syncing...' :
+                   syncStatus === 'synced' ? 'Synced' :
+                   syncStatus === 'error' ? 'Sync Error' : 'Offline'}
+                </span>
+              </div>
+              <div className={cn(
+                "w-1.5 h-1.5 rounded-full",
+                syncStatus === 'synced' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" :
+                syncStatus === 'syncing' ? "bg-blue-500 animate-pulse" :
+                syncStatus === 'error' ? "bg-rose-500" : "bg-slate-700"
+              )} />
             </div>
-            <div className={cn(
-              "w-1.5 h-1.5 rounded-full",
-              syncStatus === 'synced' ? "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]" :
-              syncStatus === 'syncing' ? "bg-blue-500 animate-pulse" :
-              syncStatus === 'error' ? "bg-rose-500" : "bg-slate-700"
-            )} />
+          </div>
+
+          <div className="pt-4 border-t border-slate-700/50">
+            <div className="flex items-center gap-3 mb-4">
+              {user.photoURL ? (
+                <img src={user.photoURL} alt={user.displayName || ''} className="w-8 h-8 rounded-full border border-slate-700" />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-[10px] font-bold">
+                  {user.displayName?.charAt(0) || 'U'}
+                </div>
+              )}
+              <div className="overflow-hidden">
+                <p className="text-xs font-bold truncate">{user.displayName}</p>
+                <p className="text-[10px] text-slate-500 truncate">{user.email}</p>
+              </div>
+            </div>
+            <button 
+              onClick={logout}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-slate-400 hover:bg-rose-500/10 hover:text-rose-500 transition-all text-xs font-bold uppercase tracking-wider"
+            >
+              <X size={14} />
+              Sign Out
+            </button>
           </div>
         </div>
       </aside>
@@ -1004,12 +1226,14 @@ export default function App() {
 
         {activeModule === 'home' ? (
           <Home 
+            user={user}
             onSelectModule={(mod) => setActiveModule(mod)} 
             printerDevice={printerDevice}
             onConnectPrinter={() => setIsPrinterModalOpen(true)}
           />
         ) : activeModule === 'production' ? (
           <Production 
+            customers={customers}
             products={products}
             productCodes={productCodes}
             boms={boms}
@@ -1027,6 +1251,19 @@ export default function App() {
             setShakenBags={setShakenBags}
             finalBoxes={finalBoxes}
             setFinalBoxes={setFinalBoxes}
+          />
+        ) : activeModule === 'logistics' ? (
+          <Logistics 
+            paperReels={paperReels}
+            setPaperReels={setPaperReels}
+            inkCans={inkCans}
+            setInkCans={setInkCans}
+            printedReels={printedReels}
+            freshCutBags={freshCutBags}
+            blownBags={blownBags}
+            finalBoxes={finalBoxes}
+            rawMaterialCodes={rawMaterialCodes}
+            initialTab={activeSubModule as any}
           />
         ) : activeModule === 'labels' ? (
           <div className="max-w-5xl mx-auto">
@@ -1858,6 +2095,253 @@ export default function App() {
                   <div className="text-center py-8 text-slate-500 text-sm">No products registered.</div>
                 )}
               </section>
+
+              {/* Raw Material Codes Section */}
+              <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <Tag className="text-blue-500" size={20} />
+                    Raw Material Codes
+                  </h3>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text"
+                      placeholder="Code (e.g. PAP-01)"
+                      value={newRMCode}
+                      onChange={(e) => setNewRMCode(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all w-32"
+                    />
+                    <input 
+                      type="text"
+                      placeholder="Name..."
+                      value={newRMName}
+                      onChange={(e) => setNewRMName(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all w-48"
+                    />
+                    <select 
+                      value={newRMType}
+                      onChange={(e) => setNewRMType(e.target.value as any)}
+                      className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 outline-none transition-all"
+                    >
+                      <option value="Paper Reel">Paper Reel</option>
+                      <option value="Ink">Ink</option>
+                      <option value="Other">Other</option>
+                    </select>
+                    <button 
+                      onClick={() => {
+                        if (newRMCode.trim() && newRMName.trim()) {
+                          const newRM: RawMaterialCode = { 
+                            code: newRMCode.trim(), 
+                            name: newRMName.trim(),
+                            type: newRMType,
+                            supplier: newRMSupplier.trim() || 'Unknown'
+                          };
+                          setRawMaterialCodes(prev => [...prev, newRM].sort((a, b) => a.code.localeCompare(b.code)));
+                          setNewRMCode('');
+                          setNewRMName('');
+                          setNewRMSupplier('');
+                        }
+                      }}
+                      disabled={!newRMCode.trim() || !newRMName.trim()}
+                      className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                    >
+                      <Plus size={14} />
+                      Add Code
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800">
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Code</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Name</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Type</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {(showAllRMCodes ? rawMaterialCodes : rawMaterialCodes.slice(0, 5)).map(rm => (
+                        <tr key={rm.code} className="group hover:bg-slate-800/30 transition-colors">
+                          <td className="px-4 py-3 font-mono text-xs text-blue-400 font-bold">{rm.code}</td>
+                          <td className="px-4 py-3 text-xs text-slate-300">{rm.name}</td>
+                          <td className="px-4 py-3 text-[10px] text-slate-500 uppercase font-bold">{rm.type}</td>
+                          <td className="px-4 py-3 text-right">
+                            <button 
+                              onClick={() => setRawMaterialCodes(rawMaterialCodes.filter(c => c.code !== rm.code))}
+                              className="p-2 text-slate-600 hover:text-red-500 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {rawMaterialCodes.length === 0 && (
+                  <div className="text-center py-8 text-slate-500 text-sm">No raw material codes registered.</div>
+                )}
+              </section>
+
+              {/* Product Codes Section */}
+              <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <FileText className="text-indigo-500" size={20} />
+                    Product Codes
+                  </h3>
+                  <div className="flex gap-2">
+                    <input 
+                      type="text"
+                      placeholder="Code (e.g. P100)"
+                      value={newPCCode}
+                      onChange={(e) => setNewPCCode(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all w-32"
+                    />
+                    <input 
+                      type="text"
+                      placeholder="Name..."
+                      value={newPCName}
+                      onChange={(e) => setNewPCName(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all w-48"
+                    />
+                    <button 
+                      onClick={() => {
+                        if (newPCCode.trim() && newPCName.trim()) {
+                          const newPC: ProductCode = { 
+                            code: newPCCode.trim(), 
+                            name: newPCName.trim(),
+                            description: newPCDescription.trim(),
+                            numColours: parseInt(newPCNumColours),
+                            defaultGsm: parseInt(newPCDefaultGsm)
+                          };
+                          setProductCodes(prev => [...prev, newPC].sort((a, b) => a.code.localeCompare(b.code)));
+                          setNewPCCode('');
+                          setNewPCName('');
+                          setNewPCDescription('');
+                        }
+                      }}
+                      disabled={!newPCCode.trim() || !newPCName.trim()}
+                      className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                    >
+                      <Plus size={14} />
+                      Add Product Code
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800">
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Code</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Name</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Colours</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">GSM</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {(showAllProductCodes ? productCodes : productCodes.slice(0, 5)).map(pc => (
+                        <tr key={pc.code} className="group hover:bg-slate-800/30 transition-colors">
+                          <td className="px-4 py-3 font-mono text-xs text-indigo-400 font-bold">{pc.code}</td>
+                          <td className="px-4 py-3 text-xs text-slate-300">{pc.name}</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{pc.numColours}</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{pc.defaultGsm}</td>
+                          <td className="px-4 py-3 text-right">
+                            <button 
+                              onClick={() => setProductCodes(productCodes.filter(c => c.code !== pc.code))}
+                              className="p-2 text-slate-600 hover:text-red-500 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {productCodes.length === 0 && (
+                  <div className="text-center py-8 text-slate-500 text-sm">No product codes registered.</div>
+                )}
+              </section>
+
+              {/* BOM Section */}
+              <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <ClipboardList className="text-emerald-500" size={20} />
+                    Bill of Materials (BOM)
+                  </h3>
+                  <div className="flex gap-2">
+                    <select 
+                      value={newBOMProductCode}
+                      onChange={(e) => setNewBOMProductCode(e.target.value)}
+                      className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all w-48"
+                    >
+                      <option value="">Select Product...</option>
+                      {productCodes.map(pc => (
+                        <option key={pc.code} value={pc.code}>{pc.code} - {pc.name}</option>
+                      ))}
+                    </select>
+                    <button 
+                      onClick={() => {
+                        if (newBOMProductCode) {
+                          const pc = productCodes.find(c => c.code === newBOMProductCode);
+                          const newBOM: BOM = { 
+                            id: uuidv4(),
+                            productCode: newBOMProductCode,
+                            requiredGsm: pc?.defaultGsm || 60,
+                            inks: []
+                          };
+                          setBoms(prev => [...prev, newBOM]);
+                          setNewBOMProductCode('');
+                        }
+                      }}
+                      disabled={!newBOMProductCode}
+                      className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                    >
+                      <Plus size={14} />
+                      Create BOM
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800">
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Product</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Required GSM</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Inks</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {(showAllBOMs ? boms : boms.slice(0, 5)).map(bom => (
+                        <tr key={bom.id} className="group hover:bg-slate-800/30 transition-colors">
+                          <td className="px-4 py-3 text-xs text-emerald-400 font-bold">{bom.productCode}</td>
+                          <td className="px-4 py-3 text-xs text-slate-300">{bom.requiredGsm} GSM</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{bom.inks.length} Inks</td>
+                          <td className="px-4 py-3 text-right">
+                            <button 
+                              onClick={() => setBoms(boms.filter(b => b.id !== bom.id))}
+                              className="p-2 text-slate-600 hover:text-red-500 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {boms.length === 0 && (
+                  <div className="text-center py-8 text-slate-500 text-sm">No BOMs defined.</div>
+                )}
+              </section>
             </div>
           </div>
         ) : activeModule === 'fibre' ? (
@@ -1880,6 +2364,8 @@ export default function App() {
           />
         ) : activeModule === 'timeclock' ? (
           <TimeClock />
+        ) : activeModule === 'fibre-analysis' ? (
+          <MicroscopeFibreAnalysis user={user} />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center max-w-2xl mx-auto px-4">
             <div className="bg-slate-900 p-6 md:p-8 rounded-full mb-6 border border-slate-800 shadow-2xl">
@@ -2111,5 +2597,6 @@ export default function App() {
         )}
       </main>
     </div>
+    </ErrorBoundary>
   );
 }

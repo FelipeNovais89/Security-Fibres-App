@@ -117,8 +117,9 @@ const Traceability: React.FC<TraceabilityProps> = ({
             {box.bags.map((bagRef, idx) => {
               const shakenBag = shakenBags.find(b => b.id === bagRef.bagId);
               const blownBag = blownBags.find(b => b.id === shakenBag?.parentBlownBagId);
-              const freshBag = freshCutBags.find(b => b.id === blownBag?.parentBagId);
-              const printedReel = printedReels.find(r => r.serialNumber === freshBag?.parentReelSerial);
+              const parentBags = freshCutBags.filter(b => blownBag?.parentBagIds?.includes(b.id));
+              const firstFreshBag = parentBags[0];
+              const printedReel = printedReels.find(r => r.serialNumber === firstFreshBag?.parentReelSerial);
               const paperReel = paperReels.find(r => r.serialNumber === printedReel?.sourceReelSerial);
 
               return (
@@ -150,8 +151,13 @@ const Traceability: React.FC<TraceabilityProps> = ({
 
                       {/* Fresh Cut */}
                       <div className="p-3 bg-slate-950 rounded-xl border border-slate-800">
-                        <p className="text-[8px] font-bold text-slate-500 uppercase mb-1">Fresh Cut Bag</p>
-                        <p className="text-xs font-mono text-slate-200">{freshBag?.id || 'N/A'}</p>
+                        <p className="text-[8px] font-bold text-slate-500 uppercase mb-1">Fresh Cut Bags</p>
+                        <div className="flex flex-col gap-1">
+                          {parentBags.map(pb => (
+                            <p key={pb.id} className="text-xs font-mono text-slate-200">{pb.id}</p>
+                          ))}
+                          {parentBags.length === 0 && <p className="text-xs font-mono text-slate-200">N/A</p>}
+                        </div>
                       </div>
                     </div>
 
