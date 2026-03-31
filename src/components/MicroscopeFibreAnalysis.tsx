@@ -20,9 +20,10 @@ import {
   Download,
   Eye,
   EyeOff,
-  History
+  History,
+  MousePointer2
 } from 'lucide-react';
-import { FibreObject, Calibration, FibreAnalysis, FibreModule } from '../types/fibre';
+import { FibreObject, Calibration, FibreAnalysis, FibreModule, FibreColorProfile, FibreType } from '../types/fibre';
 import { FibreDetectionService } from '../services/fibreDetectionService';
 import { FibreDatasetService } from '../services/fibreDatasetService';
 import { auth } from '../firebase';
@@ -69,11 +70,98 @@ const FibreCrop: React.FC<{ imageSrc: string, object: FibreObject }> = ({ imageS
   );
 };
 
+const SelectedObjectPanel: React.FC<{ 
+  object: FibreObject, 
+  onUpdate: (updated: FibreObject) => void,
+  onDelete: () => void,
+  onMarkAsNoise: () => void
+}> = ({ object, onUpdate, onDelete, onMarkAsNoise }) => {
+  return (
+    <motion.div 
+      initial={{ opacity: 0, x: 20 }}
+      animate={{ opacity: 1, x: 0 }}
+      className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl space-y-6"
+    >
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-bold uppercase tracking-widest text-emerald-500">Selected Object</h3>
+        <span className="text-[10px] font-mono text-slate-500">#{object.id.slice(0, 8)}</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-1">
+          <p className="text-[10px] text-slate-500 uppercase font-bold">Source</p>
+          <p className="text-xs text-white capitalize">{object.source}</p>
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] text-slate-500 uppercase font-bold">Status</p>
+          <p className={cn(
+            "text-xs font-bold capitalize",
+            object.status === 'confirmed' ? "text-emerald-500" :
+            object.status === 'deleted' ? "text-rose-500" :
+            object.status === 'noise' ? "text-amber-500" :
+            "text-blue-500"
+          )}>{object.status}</p>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex justify-between items-end">
+          <div className="space-y-1">
+            <p className="text-[10px] text-slate-500 uppercase font-bold">Length</p>
+            <p className="text-lg font-bold text-white">{object.lengthMm.toFixed(2)}<span className="text-xs text-slate-500 ml-1">mm</span></p>
+            <p className="text-[10px] text-slate-500 font-mono">{object.lengthPx.toFixed(1)} px</p>
+          </div>
+          <div className="space-y-1 text-right">
+            <p className="text-[10px] text-slate-500 uppercase font-bold">Width</p>
+            <p className="text-lg font-bold text-white">{object.widthMm.toFixed(2)}<span className="text-xs text-slate-500 ml-1">mm</span></p>
+            <p className="text-[10px] text-slate-500 font-mono">{object.widthPx.toFixed(1)} px</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-4 pt-4 border-t border-slate-800">
+        <div className="space-y-2">
+          <label className="text-[10px] font-bold text-slate-500 uppercase">Label</label>
+          <select 
+            value={object.finalLabel}
+            onChange={(e) => onUpdate({ ...object, finalLabel: e.target.value as any, status: 'confirmed' as const, source: 'corrected' as const })}
+            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-white text-sm"
+          >
+            <option value="fibre">Fibre</option>
+            <option value="double">Double</option>
+            <option value="chain">Chain</option>
+            <option value="pulp">Pulp</option>
+            <option value="broken">Broken</option>
+            <option value="noise">Noise</option>
+            <option value="other">Other</option>
+          </select>
+        </div>
+
+        <div className="flex gap-2">
+          <button 
+            onClick={onMarkAsNoise}
+            className="flex-1 py-2 bg-amber-500/10 text-amber-500 rounded-xl font-bold text-[10px] hover:bg-amber-500/20 transition-all"
+          >
+            Mark as Noise
+          </button>
+          <button 
+            onClick={onDelete}
+            className="flex-1 py-2 bg-rose-500/10 text-rose-500 rounded-xl font-bold text-[10px] hover:bg-rose-500/20 transition-all"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
 interface MicroscopeFibreAnalysisProps {
   user: User;
+  products?: FibreType[];
 }
 
-const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user }) => {
+const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user, products = [] }) => {
   const [activeTab, setActiveTab] = useState<'analysis' | 'dataset'>('analysis');
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [capturedImage, setCapturedImage] = useState<string | null>(null);
@@ -87,12 +175,49 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
   const [showLabels, setShowLabels] = useState(true);
   const [showMeasurements, setShowMeasurements] = useState(true);
   const [topIgnorePx, setTopIgnorePx] = useState(80); // Default 80px for OSD
+  const [detectionParams, setDetectionParams] = useState({
+    thresholdOffset: 15,
+    minAreaPx: 50,
+    maxAreaPx: 50000,
+    autoMergeGapMm: 3.0,
+    autoMergeAngleToleranceDeg: 20,
+    autoMergeWidthTolerance: 0.5,
+    autoMergeContinuityScoreMin: 0.7,
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [confirmAction, setConfirmAction] = useState<'discard' | 'delete' | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle');
+  
+  // Color Profile State
+  const [colorProfiles, setColorProfiles] = useState<FibreColorProfile[]>([
+    {
+      id: 'default',
+      name: 'Standard Fibre',
+      selectedColors: ['red', 'blue', 'green', 'yellow', 'orange', 'purple', 'magenta', 'cyan', 'gray', 'light'],
+      combineColors: true,
+      excludeColors: ['black'],
+      intensityThreshold: 20,
+      minArea: 50,
+      morphologyClose: 2
+    },
+    {
+      id: 'red-fibres',
+      name: 'Red Fibres Only',
+      selectedColors: ['red', 'red2'],
+      combineColors: true,
+      excludeColors: ['black', 'gray', 'blue', 'green'],
+      intensityThreshold: 15,
+      minArea: 30,
+      morphologyClose: 3
+    }
+  ]);
+  const [selectedProfileId, setSelectedProfileId] = useState<string>('default');
+
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [history, setHistory] = useState<FibreObject[][]>([]);
+  const [redoStack, setRedoStack] = useState<FibreObject[][]>([]);
+  const [selectedObject, setSelectedObject] = useState<FibreObject | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -189,8 +314,16 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
   const runAnalysis = async () => {
     if (!capturedImage || !calibration) return;
     setIsAnalyzing(true);
+    
+    const profile = colorProfiles.find(p => p.id === selectedProfileId);
+    
     try {
-      const results = await FibreDetectionService.analyzeImage(capturedImage, calibration, uuidv4(), topIgnorePx);
+      const results = await FibreDetectionService.analyzeImage(
+        capturedImage, 
+        calibration, 
+        uuidv4(), 
+        { ...detectionParams, topIgnorePx, colorProfile: profile }
+      );
       setObjects(results);
       setHistory([results]);
     } catch (err) {
@@ -202,16 +335,59 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
 
   const addToHistory = (newObjects: FibreObject[]) => {
     setHistory(prev => [...prev, newObjects]);
+    setRedoStack([]); // Clear redo stack on new action
     setObjects(newObjects);
   };
 
   const undo = () => {
     if (history.length > 1) {
       const newHistory = [...history];
-      newHistory.pop();
+      const current = newHistory.pop()!;
+      setRedoStack(prev => [...prev, current]);
       setHistory(newHistory);
       setObjects(newHistory[newHistory.length - 1]);
+      setSelectedIds([]);
+      setSelectedObject(null);
     }
+  };
+
+  const redo = () => {
+    if (redoStack.length > 0) {
+      const newRedoStack = [...redoStack];
+      const next = newRedoStack.pop()!;
+      setRedoStack(newRedoStack);
+      setHistory(prev => [...prev, next]);
+      setObjects(next);
+      setSelectedIds([]);
+      setSelectedObject(null);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedIds.length === 1) {
+      const obj = objects.find(o => o.id === selectedIds[0]);
+      setSelectedObject(obj || null);
+    } else {
+      setSelectedObject(null);
+    }
+  }, [selectedIds, objects]);
+
+  const handleMarkAsNoise = () => {
+    if (selectedIds.length === 0) return;
+    const newObjects = objects.map(o => 
+      selectedIds.includes(o.id) ? { ...o, status: 'noise' as const, finalLabel: 'noise' } : o
+    );
+    addToHistory(newObjects);
+    setSelectedIds([]);
+  };
+
+  const handleDeleteSelected = () => {
+    if (selectedIds.length === 0) return;
+    const newObjects = objects.map(o => 
+      selectedIds.includes(o.id) ? { ...o, status: 'deleted' as const } : o
+    );
+    addToHistory(newObjects);
+    setSelectedIds([]);
   };
 
   const handleMerge = () => {
@@ -232,9 +408,9 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
 
     const widthPx = maxX - minX;
     const heightPx = maxY - minY;
-    const lengthPx = Math.sqrt(widthPx * widthPx + heightPx * heightPx);
-    const areaPx = points.length;
-    const avgWidthPx = areaPx / lengthPx;
+    const totalLengthPx = objectsToMerge.reduce((acc, o) => acc + o.lengthPx, 0);
+    const totalAreaPx = points.length;
+    const avgWidthPx = totalAreaPx / totalLengthPx;
 
     const mergedObject: FibreObject = {
       id: uuidv4(),
@@ -242,10 +418,10 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
       points,
       boundingBox: { x: minX, y: minY, width: widthPx, height: heightPx },
       centroid,
-      areaPx,
-      lengthPx,
+      areaPx: totalAreaPx,
+      lengthPx: totalLengthPx,
       widthPx: avgWidthPx,
-      lengthMm: lengthPx * calibration.mmPerPixel,
+      lengthMm: totalLengthPx * calibration.mmPerPixel,
       widthMm: avgWidthPx * calibration.mmPerPixel,
       angle: Math.atan2(heightPx, widthPx) * (180 / Math.PI),
       confidence: 1.0,
@@ -289,6 +465,16 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
 
     if (pointsA.length < 10 || pointsB.length < 10) return;
 
+    const calculateLength = (pts: { x: number, y: number }[]) => {
+      let len = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const dx = pts[i].x - pts[i-1].x;
+        const dy = pts[i].y - pts[i-1].y;
+        len += Math.sqrt(dx * dx + dy * dy);
+      }
+      return len || 1;
+    };
+
     const createFromPoints = (pts: { x: number, y: number }[]): FibreObject => {
       const minX = Math.min(...pts.map(p => p.x));
       const minY = Math.min(...pts.map(p => p.y));
@@ -296,7 +482,7 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
       const maxY = Math.max(...pts.map(p => p.y));
       const w = maxX - minX;
       const h = maxY - minY;
-      const len = Math.sqrt(w * w + h * h);
+      const len = calculateLength(pts);
       const area = pts.length;
       
       let sX = 0, sY = 0;
@@ -333,13 +519,23 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
   const handleAddFibre = (points: { x: number, y: number }[]) => {
     if (!calibration) return;
     
+    const calculateLength = (pts: { x: number, y: number }[]) => {
+      let len = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const dx = pts[i].x - pts[i-1].x;
+        const dy = pts[i].y - pts[i-1].y;
+        len += Math.sqrt(dx * dx + dy * dy);
+      }
+      return len || 1;
+    };
+
     const minX = Math.min(...points.map(p => p.x));
     const minY = Math.min(...points.map(p => p.y));
     const maxX = Math.max(...points.map(p => p.x));
     const maxY = Math.max(...points.map(p => p.y));
     const w = maxX - minX;
     const h = maxY - minY;
-    const len = Math.sqrt(w * w + h * h);
+    const len = calculateLength(points);
     const area = points.length;
     
     let sX = 0, sY = 0;
@@ -426,11 +622,23 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
   };
 
   if (activeTab === 'dataset') {
-    return <DatasetBuilder onBack={() => setActiveTab('analysis')} topIgnorePx={topIgnorePx} />;
+    return <DatasetBuilder onBack={() => setActiveTab('analysis')} topIgnorePx={topIgnorePx} activeCalibration={calibration} products={products} />;
   }
 
   const sidebar = (
     <div className="space-y-6">
+      {/* Selected Object Panel */}
+      <AnimatePresence>
+        {selectedObject && (
+          <SelectedObjectPanel 
+            object={selectedObject}
+            onUpdate={(updated) => addToHistory(objects.map(o => o.id === updated.id ? updated : o))}
+            onDelete={handleDeleteSelected}
+            onMarkAsNoise={handleMarkAsNoise}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Settings Panel */}
       <AnimatePresence>
         {showSettings && (
@@ -455,10 +663,57 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
                   onChange={(e) => setTopIgnorePx(parseInt(e.target.value))}
                   className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
                 />
-                <p className="text-[9px] text-slate-500 leading-relaxed">
-                  Adjust this to exclude camera info/OSD from the analysis. The rose-shaded area in the preview will be ignored.
-                </p>
               </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">Threshold Offset</label>
+                  <span className="text-[10px] font-mono text-emerald-500">{detectionParams.thresholdOffset}</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="5" 
+                  max="50" 
+                  value={detectionParams.thresholdOffset}
+                  onChange={(e) => setDetectionParams(prev => ({ ...prev, thresholdOffset: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">Min Area (px)</label>
+                  <span className="text-[10px] font-mono text-emerald-500">{detectionParams.minAreaPx}</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="10" 
+                  max="500" 
+                  value={detectionParams.minAreaPx}
+                  onChange={(e) => setDetectionParams(prev => ({ ...prev, minAreaPx: parseInt(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase">Auto-Merge Gap (mm)</label>
+                  <span className="text-[10px] font-mono text-emerald-500">{detectionParams.autoMergeGapMm}mm</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0.5" 
+                  max="10" 
+                  step="0.5"
+                  value={detectionParams.autoMergeGapMm}
+                  onChange={(e) => setDetectionParams(prev => ({ ...prev, autoMergeGapMm: parseFloat(e.target.value) }))}
+                  className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-emerald-500"
+                />
+              </div>
+
+              <p className="text-[9px] text-slate-500 leading-relaxed">
+                Adjust these parameters to fine-tune the heuristic detection pipeline.
+              </p>
             </div>
           </motion.div>
         )}
@@ -537,27 +792,37 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
 
           {objects.length > 0 && (
             <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
+              <div className="p-3 bg-slate-950 rounded-2xl border border-slate-800 flex justify-between items-center">
+                <span className="text-[10px] font-bold text-slate-500 uppercase">Detection Mode</span>
+                <span className="text-[10px] font-mono text-blue-500 font-bold">HEURISTIC</span>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-                  <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Raw Detected</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Raw Detections</p>
                   <p className="text-2xl font-bold text-white">{objects.filter(o => o.source === 'auto').length}</p>
                 </div>
                 <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-                  <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Final Count</p>
-                  <p className="text-2xl font-bold text-emerald-500">{objects.filter(o => o.status !== 'deleted').length}</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Confirmed Fibres</p>
+                  <p className="text-2xl font-bold text-emerald-500">{objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').length}</p>
                 </div>
                 <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
                   <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Avg Length</p>
                   <p className="text-2xl font-bold text-white">
-                    {objects.filter(o => o.status !== 'deleted').length > 0 
-                      ? (objects.filter(o => o.status !== 'deleted').reduce((acc, o) => acc + o.lengthMm, 0) / objects.filter(o => o.status !== 'deleted').length).toFixed(2)
+                    {objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').length > 0 
+                      ? (objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').reduce((acc, o) => acc + o.lengthMm, 0) / objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').length).toFixed(2)
                       : '0.00'}
                     <span className="text-xs text-slate-500 ml-1">mm</span>
                   </p>
                 </div>
                 <div className="p-4 bg-slate-950 rounded-2xl border border-slate-800">
-                  <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Manual Edits</p>
-                  <p className="text-2xl font-bold text-blue-500">{objects.filter(o => o.source !== 'auto').length}</p>
+                  <p className="text-[10px] text-slate-500 font-bold uppercase mb-1">Avg Width</p>
+                  <p className="text-2xl font-bold text-white">
+                    {objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').length > 0 
+                      ? (objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').reduce((acc, o) => acc + o.widthMm, 0) / objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').length).toFixed(2)
+                      : '0.00'}
+                    <span className="text-xs text-slate-500 ml-1">mm</span>
+                  </p>
                 </div>
               </div>
 
@@ -646,10 +911,10 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
         <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
           <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex justify-between items-center">
             Fibre Gallery
-            <span className="text-[10px] text-emerald-500">{objects.filter(o => o.status !== 'deleted').length} items</span>
+            <span className="text-[10px] text-emerald-500">{objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').length} items</span>
           </h3>
           <div className="grid grid-cols-3 gap-3 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-            {objects.filter(o => o.status !== 'deleted').map((obj) => (
+            {objects.filter(o => o.status !== 'deleted' && o.status !== 'noise' && o.status !== 'defect').map((obj) => (
               <FibreCrop key={obj.id} imageSrc={capturedImage!} object={obj} />
             ))}
           </div>
@@ -759,14 +1024,32 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
               >
                 <Ruler size={20} />
               </button>
+              <div className="w-px h-6 bg-slate-800 mx-2" />
+              <button 
+                onClick={undo}
+                disabled={history.length <= 1}
+                className="p-2 text-slate-500 hover:bg-slate-800 rounded-lg disabled:opacity-20"
+                title="Undo"
+              >
+                <History size={20} className="rotate-180" />
+              </button>
+              <button 
+                onClick={redo}
+                disabled={redoStack.length === 0}
+                className="p-2 text-slate-500 hover:bg-slate-800 rounded-lg disabled:opacity-20"
+                title="Redo"
+              >
+                <History size={20} />
+              </button>
             </div>
             
             <div className="flex items-center gap-2">
               <button 
                 onClick={() => setEditMode('view')}
-                className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all", editMode === 'view' ? "bg-slate-700 text-white" : "text-slate-500 hover:bg-slate-800")}
+                className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2", editMode === 'view' ? "bg-slate-700 text-white" : "text-slate-500 hover:bg-slate-800")}
               >
-                Pan/Zoom
+                <MousePointer2 size={14} />
+                Select
               </button>
               <button 
                 onClick={() => setEditMode('add')}
@@ -776,38 +1059,20 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
                 Add
               </button>
               <button 
+                onClick={() => setEditMode('split')}
+                className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2", editMode === 'split' ? "bg-rose-500 text-white" : "text-slate-500 hover:bg-slate-800")}
+              >
+                <Scissors size={14} />
+                Split
+              </button>
+              <button 
                 onClick={() => setEditMode('merge')}
                 className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2", editMode === 'merge' ? "bg-blue-500 text-white" : "text-slate-500 hover:bg-slate-800")}
               >
                 <Combine size={14} />
                 Merge
               </button>
-              <button 
-                onClick={() => setEditMode('split')}
-                className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2", editMode === 'split' ? "bg-amber-500 text-white" : "text-slate-500 hover:bg-slate-800")}
-              >
-                <Scissors size={14} />
-                Split
-              </button>
-              <button 
-                onClick={() => setEditMode('delete')}
-                className={cn("px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2", editMode === 'delete' ? "bg-rose-500 text-white" : "text-slate-500 hover:bg-slate-800")}
-              >
-                <Trash2 size={14} />
-                Remove
-              </button>
               
-              <div className="w-px h-6 bg-slate-800 mx-2" />
-              
-              <button 
-                onClick={undo}
-                disabled={history.length <= 1}
-                className="p-2 text-slate-500 hover:bg-slate-800 rounded-lg disabled:opacity-30"
-                title="Undo"
-              >
-                <RefreshCw size={18} className="scale-x-[-1]" />
-              </button>
-
               {editMode === 'merge' && selectedIds.length >= 2 && (
                 <button 
                   onClick={handleMerge}
@@ -816,6 +1081,15 @@ const MicroscopeFibreAnalysis: React.FC<MicroscopeFibreAnalysisProps> = ({ user 
                   Confirm Merge ({selectedIds.length})
                 </button>
               )}
+              
+              <button 
+                onClick={handleDeleteSelected}
+                disabled={selectedIds.length === 0}
+                className="p-2 text-rose-500 hover:bg-rose-500/10 rounded-lg disabled:opacity-20"
+                title="Delete Selected"
+              >
+                <Trash2 size={20} />
+              </button>
             </div>
           </div>
         </div>

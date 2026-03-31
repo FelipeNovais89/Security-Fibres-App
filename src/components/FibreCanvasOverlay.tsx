@@ -271,11 +271,36 @@ const FibreCanvasOverlay: React.FC<FibreCanvasOverlayProps> = ({
     setIsDragging(false);
   };
 
+  const isPointInPolygon = (x: number, y: number, points: { x: number, y: number }[]) => {
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+      const xi = points[i].x, yi = points[i].y;
+      const xj = points[j].x, yj = points[j].y;
+      const intersect = ((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
+    }
+    return inside;
+  };
+
   const findObjectAt = (x: number, y: number) => {
+    // First try precise point-in-polygon check
+    const preciseHit = objects.find(obj => {
+      if (obj.status === 'deleted') return false;
+      if (obj.points && obj.points.length > 2) {
+        return isPointInPolygon(x, y, obj.points);
+      }
+      return false;
+    });
+
+    if (preciseHit) return preciseHit;
+
+    // Fallback to bounding box with small padding for easier selection of thin lines
+    const padding = 5 / scale;
     return objects.find(obj => {
       if (obj.status === 'deleted') return false;
-      return x >= obj.boundingBox.x && x <= obj.boundingBox.x + obj.boundingBox.width &&
-             y >= obj.boundingBox.y && y <= obj.boundingBox.y + obj.boundingBox.height;
+      return x >= obj.boundingBox.x - padding && x <= obj.boundingBox.x + obj.boundingBox.width + padding &&
+             y >= obj.boundingBox.y - padding && y <= obj.boundingBox.y + obj.boundingBox.height + padding;
     });
   };
 

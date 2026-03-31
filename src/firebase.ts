@@ -1,11 +1,18 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs } from 'firebase/firestore';
+import { initializeFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Use initializeFirestore to set ignoreUndefinedProperties: true
+export const db = initializeFirestore(app, {
+  ignoreUndefinedProperties: true,
+}, firebaseConfig.firestoreDatabaseId);
+
+export const storage = getStorage(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export const signInWithGoogle = () => signInWithPopup(auth, googleProvider);

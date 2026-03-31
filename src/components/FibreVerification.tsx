@@ -21,19 +21,9 @@ import { v4 as uuidv4 } from 'uuid';
 import WheelDatePicker from './WheelDatePicker';
 import { cn } from '../utils/cn';
 import FibrePageLayout from './FibrePageLayout';
+import { FibreType } from '../types/fibre';
 
 // --- Types ---
-
-interface FibreType {
-  id: string;
-  name: string;
-  colour: string;
-  colorVisibility?: 'Visible' | 'Invisible UV' | 'Visible & Invisible' | 'Invisible UV SW' | 'Invisible UV LW';
-  length: string;
-  pitch: string;
-  cutType: string;
-  gsm: string;
-}
 
 interface Inspection {
   quantityChecked: number;
@@ -430,7 +420,7 @@ export default function FibreVerification({ customers, products, onSave, onAddPr
                   <span className="font-bold">{type.name}</span>
                   {currentJob.fibreTypeId === type.id && <CheckCircle2 size={16} />}
                 </div>
-                <p className="text-[10px] opacity-60 mt-1">{type.colour} • {type.length} • {type.pitch}</p>
+                <p className="text-[10px] opacity-60 mt-1">{type.colour} • {type.length} • {type.pitch} • {type.cutType}</p>
               </button>
             ))}
           </div>

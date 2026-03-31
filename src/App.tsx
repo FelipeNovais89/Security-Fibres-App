@@ -126,25 +126,15 @@ import {
   FreshCutBag, 
   BlownBag, 
   ShakenBag, 
-  FinalBox 
+  FinalBox
 } from './types';
+import { FibreType } from './types/fibre';
 
 // --- Types ---
 
 interface Customer {
   id: string;
   name: string;
-}
-
-interface Product {
-  id: string;
-  name: string;
-  colour: string;
-  colorVisibility?: 'Visible' | 'Invisible UV' | 'Visible & Invisible' | 'Invisible UV SW' | 'Invisible UV LW';
-  cutType: string;
-  length: string;
-  pitch: string;
-  gsm: string;
 }
 
 // --- Components ---
@@ -843,7 +833,7 @@ export default function App() {
     return [...data].sort((a, b) => a.name.localeCompare(b.name));
   });
 
-  const [products, setProducts] = useState<Product[]>(() => {
+  const [products, setProducts] = useState<FibreType[]>(() => {
     const saved = localStorage.getItem('fiberqc_products');
     const data = saved ? JSON.parse(saved) : [
       { 
@@ -2342,6 +2332,82 @@ export default function App() {
                   <div className="text-center py-8 text-slate-500 text-sm">No BOMs defined.</div>
                 )}
               </section>
+
+              {/* Fibre Types Section */}
+              <section className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <Database className="text-emerald-500" size={20} />
+                    Registered Fibre Types
+                  </h3>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => {
+                        const newFibre: FibreType = {
+                          id: uuidv4(),
+                          name: 'New Fibre Type',
+                          colour: 'White',
+                          length: '3 mm',
+                          pitch: '0.30 mm',
+                          cutType: 'Random',
+                          gsm: '22',
+                          colorVisibility: 'Visible'
+                        };
+                        setProducts(prev => [...prev, newFibre].sort((a, b) => a.name.localeCompare(b.name)));
+                      }}
+                      className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-xs font-bold transition-all"
+                    >
+                      <Plus size={14} />
+                      Add Fibre Type
+                    </button>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-slate-800">
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Name</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Colour</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Length</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Pitch</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">Cut Type</th>
+                        <th className="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-500 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {(showAllProducts ? products : products.slice(0, 5)).map(p => (
+                        <tr key={p.id} className="group hover:bg-slate-800/30 transition-colors">
+                          <td className="px-4 py-3 text-xs text-white font-bold">{p.name}</td>
+                          <td className="px-4 py-3 text-xs text-slate-300">{p.colour}</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{p.length}</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{p.pitch}</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{p.cutType}</td>
+                          <td className="px-4 py-3 text-right">
+                            <button 
+                              onClick={() => setProducts(products.filter(item => item.id !== p.id))}
+                              className="p-2 text-slate-600 hover:text-red-500 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {products.length > 5 && (
+                  <button 
+                    onClick={() => setShowAllProducts(!showAllProducts)}
+                    className="w-full mt-4 py-2 text-xs text-slate-500 hover:text-white transition-colors border-t border-slate-800"
+                  >
+                    {showAllProducts ? 'Show Less' : `Show All (${products.length})`}
+                  </button>
+                )}
+                {products.length === 0 && (
+                  <div className="text-center py-8 text-slate-500 text-sm">No fibre types registered.</div>
+                )}
+              </section>
             </div>
           </div>
         ) : activeModule === 'fibre' ? (
@@ -2365,7 +2431,7 @@ export default function App() {
         ) : activeModule === 'timeclock' ? (
           <TimeClock />
         ) : activeModule === 'fibre-analysis' ? (
-          <MicroscopeFibreAnalysis user={user} />
+          <MicroscopeFibreAnalysis user={user} products={products} />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center max-w-2xl mx-auto px-4">
             <div className="bg-slate-900 p-6 md:p-8 rounded-full mb-6 border border-slate-800 shadow-2xl">
