@@ -26,6 +26,7 @@ import {
   Settings,
   Bluetooth,
   BluetoothOff,
+  Usb,
   Cloud,
   CloudOff,
   RefreshCw,
@@ -49,9 +50,15 @@ import { motion, AnimatePresence } from 'motion/react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { auth, signInWithGoogle, logout, db, OperationType, handleFirestoreError } from './firebase';
+import { Toaster, toast } from 'sonner';
 import FibreVerification from './components/FibreVerification';
 import MicroscopeFibreAnalysis from './components/MicroscopeFibreAnalysis';
 import { FibreModule } from './types/fibre';
+import { 
+  processImageForPrinting, 
+  printImageViaBluetooth, 
+  printImageViaUSB 
+} from './printer/PhomemoM110';
 
 // --- Error Boundary ---
 interface ErrorBoundaryProps {
@@ -114,6 +121,7 @@ import Home from './components/Home';
 import TimeClock from './components/TimeClock';
 import Production from './components/Production';
 import Logistics from './components/Logistics';
+import PrinterPanel from './components/PrinterPanel';
 import { cn } from './utils/cn';
 import { bluetoothService, BluetoothDiagnostics } from './services/bluetoothService';
 import { 
@@ -511,6 +519,71 @@ export default function App() {
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
   const [isPrinterModalOpen, setIsPrinterModalOpen] = useState(false);
+  const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false);
+  const [isLayoutConfigOpen, setIsLayoutConfigOpen] = useState(false);
+  const labelRef = useRef<HTMLDivElement>(null);
+  const [printerStatus, setPrinterStatus] = useState<'disconnected' | 'connecting' | 'connected_bt' | 'connected_usb'>('disconnected');
+  const [connectedDeviceName, setConnectedDeviceName] = useState<string | null>(null);
+  const [btCharacteristic, setBtCharacteristic] = useState<BluetoothRemoteGATTCharacteristic | null>(null);
+  const [usbPort, setUsbPort] = useState<any>(null);
+
+  const handlePrintFromPreview = async () => {
+    if (!labelRef.current) return;
+    
+    try {
+      // Capture the label as a PNG
+      // We use a higher scale for better quality
+      const dataUrl = await toPng(labelRef.current, { 
+        pixelRatio: 2,
+        backgroundColor: '#ffffff'
+      });
+      
+      // Create a temporary image to draw on canvas
+      const img = new Image();
+      img.src = dataUrl;
+      await new Promise((resolve) => (img.onload = resolve));
+      
+      // Create a canvas to process the image
+      const canvas = document.createElement('canvas');
+      // Phomemo M110 standard width is 384 dots
+      const targetWidth = 384;
+      const targetHeight = Math.round((img.height / img.width) * targetWidth);
+      
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Could not get canvas context");
+      
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+      
+      // Process for printing (monochrome bitmap)
+      const { data, width, height } = processImageForPrinting(canvas);
+      
+      // Send to printer
+      if (printerStatus === 'connected_bt' && btCharacteristic) {
+        await printImageViaBluetooth(btCharacteristic, data, width, height);
+      } else if (printerStatus === 'connected_usb' && usbPort) {
+        await printImageViaUSB(usbPort, data, width, height);
+      } else {
+        throw new Error("Printer not connected");
+      }
+    } catch (error) {
+      console.error("Print error:", error);
+      throw error;
+    }
+  };
+
+  const getLabelText = () => {
+    if (labelType === 'store') {
+      return `Fibre's Sample Bags\nBox Nr: ${storeData.boxNr}\nMonth: ${storeData.month}\nYear: ${storeData.year}`;
+    } else {
+      // Simplified label content as requested
+      return `QUALITY CONTROL\nCUSTOMER: ${productData.customer}\nCOLOUR: ${productData.colour}\nQTY: ${productData.quantity}\nCUT: ${productData.cutType}\nLEN: ${productData.length}\nPITCH: ${productData.pitch}\nGSM: ${productData.gsm}`;
+    }
+  };
 
   const toggleMenu = (id: string) => {
     setExpandedMenus(prev => 
@@ -869,33 +942,43 @@ export default function App() {
     
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
       if (docSnap.exists()) {
-        const data = docSnap.data().value ? JSON.parse(docSnap.data().value) : {};
+        const serverValue = docSnap.data().value;
+        const data = serverValue ? JSON.parse(serverValue) : {};
+        
         if (Object.keys(data).length > 0) {
-          if (data.fiberqc_rm_codes) setRawMaterialCodes(data.fiberqc_rm_codes);
-          if (data.fiberqc_product_codes) setProductCodes(data.fiberqc_product_codes);
-          if (data.fiberqc_boms) setBoms(data.fiberqc_boms);
-          if (data.fiberqc_paper_reels) setPaperReels(data.fiberqc_paper_reels);
-          if (data.fiberqc_ink_cans) setInkCans(data.fiberqc_ink_cans);
-          if (data.fiberqc_printed_reels) setPrintedReels(data.fiberqc_printed_reels);
-          if (data.fiberqc_fresh_cut_bags) setFreshCutBags(data.fiberqc_fresh_cut_bags);
-          if (data.fiberqc_blown_bags) setBlownBags(data.fiberqc_blown_bags);
-          if (data.fiberqc_shaken_bags) setShakenBags(data.fiberqc_shaken_bags);
-          if (data.fiberqc_final_boxes) setFinalBoxes(data.fiberqc_final_boxes);
-          if (data.fiberqc_fibre_checks) setFibreChecks(data.fiberqc_fibre_checks);
-          if (data.fiberqc_store_box_config) setStoreBoxConfig(data.fiberqc_store_box_config);
-          if (data.fiberqc_product_check_config) setProductCheckConfig(data.fiberqc_product_check_config);
-          if (data.fiberqc_customers) setCustomers(data.fiberqc_customers);
-          if (data.fiberqc_products) setProducts(data.fiberqc_products);
+          // Only update if syncStatus is not 'syncing', 'pending' or 'error' to avoid race conditions
+          // and only if the data is actually different from what we have
+          setSyncStatus(prev => {
+            if (prev === 'syncing' || prev === 'pending') return prev;
+            
+            if (data.fiberqc_rm_codes) setRawMaterialCodes(data.fiberqc_rm_codes);
+            if (data.fiberqc_product_codes) setProductCodes(data.fiberqc_product_codes);
+            if (data.fiberqc_boms) setBoms(data.fiberqc_boms);
+            if (data.fiberqc_paper_reels) setPaperReels(data.fiberqc_paper_reels);
+            if (data.fiberqc_ink_cans) setInkCans(data.fiberqc_ink_cans);
+            if (data.fiberqc_printed_reels) setPrintedReels(data.fiberqc_printed_reels);
+            if (data.fiberqc_fresh_cut_bags) setFreshCutBags(data.fiberqc_fresh_cut_bags);
+            if (data.fiberqc_blown_bags) setBlownBags(data.fiberqc_blown_bags);
+            if (data.fiberqc_shaken_bags) setShakenBags(data.fiberqc_shaken_bags);
+            if (data.fiberqc_final_boxes) setFinalBoxes(data.fiberqc_final_boxes);
+            if (data.fiberqc_fibre_checks) setFibreChecks(data.fiberqc_fibre_checks);
+            if (data.fiberqc_store_box_config) setStoreBoxConfig(data.fiberqc_store_box_config);
+            if (data.fiberqc_product_check_config) setProductCheckConfig(data.fiberqc_product_check_config);
+            if (data.fiberqc_customers) setCustomers(data.fiberqc_customers);
+            if (data.fiberqc_products) setProducts(data.fiberqc_products);
+            
+            return 'synced';
+          });
         }
-        setSyncStatus('synced');
       } else {
         setSyncStatus('idle');
       }
       setIsDataLoaded(true);
     }, (error) => {
-      handleFirestoreError(error, OperationType.GET, 'app_data/global_state');
+      console.error('Firestore onSnapshot Error:', error);
+      // Don't set isDataLoaded(true) here if it's the first load, 
+      // because we don't want to start saving empty state.
       setSyncStatus('error');
-      setIsDataLoaded(true);
     });
 
     return () => unsubscribe();
@@ -903,7 +986,10 @@ export default function App() {
 
   // Save data to Firestore (debounced)
   React.useEffect(() => {
-    if (!isDataLoaded || !user) return;
+    if (!isDataLoaded || !user || syncStatus === 'error') return;
+
+    // Set status to pending immediately when any dependency changes
+    setSyncStatus(prev => prev === 'error' ? 'error' : 'pending');
 
     const timer = setTimeout(async () => {
       setSyncStatus('syncing');
@@ -935,6 +1021,7 @@ export default function App() {
         await setDoc(docRef, { value: JSON.stringify(allData) });
         setSyncStatus('synced');
       } catch (error) {
+        toast.error('Sync Error: Data could not be saved to the cloud.');
         handleFirestoreError(error, OperationType.WRITE, 'app_data/global_state');
         setSyncStatus('error');
       }
@@ -1039,6 +1126,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+      <Toaster position="top-right" richColors closeButton />
       <div className="flex h-screen bg-slate-950 text-slate-100 font-sans selection:bg-emerald-500/30 overflow-hidden">
       {/* Mobile Sidebar Overlay */}
       {isSidebarOpen && (
@@ -1218,7 +1306,8 @@ export default function App() {
           <Home 
             user={user}
             onSelectModule={(mod) => setActiveModule(mod)} 
-            printerDevice={printerDevice}
+            printerStatus={printerStatus}
+            connectedDeviceName={connectedDeviceName}
             onConnectPrinter={() => setIsPrinterModalOpen(true)}
           />
         ) : activeModule === 'production' ? (
@@ -1257,9 +1346,18 @@ export default function App() {
           />
         ) : activeModule === 'labels' ? (
           <div className="max-w-5xl mx-auto">
-            <header className="mb-6 md:mb-8">
-              <h2 className="text-2xl md:text-3xl font-bold tracking-tight mb-2">Label Printing</h2>
-              <p className="text-sm md:text-base text-slate-400">Generate and print standardized labels.</p>
+            <header className="mb-6 md:mb-8 flex items-center gap-4">
+              <button 
+                onClick={() => setActiveModule('home')}
+                className="p-2 bg-slate-900 border border-slate-800 rounded-xl text-slate-400 hover:text-white transition-colors"
+                title="Back to Home"
+              >
+                <ChevronRight size={20} className="rotate-180" />
+              </button>
+              <div>
+                <h2 className="text-2xl md:text-3xl font-bold tracking-tight mb-2">Label Printing</h2>
+                <p className="text-sm md:text-base text-slate-400">Generate and print standardized labels.</p>
+              </div>
             </header>
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-8">
@@ -1349,7 +1447,7 @@ export default function App() {
                           label="Colour"
                           placeholder="Select or type colour..."
                           value={productData.colour}
-                          options={([...new Set(products.map(p => p.colour).filter(Boolean))] as string[]).sort((a, b) => a.localeCompare(b))}
+                          options={([...new Set(products.map(p => p.colour || p.name).filter(Boolean))] as string[]).sort((a, b) => a.localeCompare(b))}
                           onChange={(val) => {
                             const product = products.find(p => p.colour === val || p.name === val);
                             if (product) {
@@ -1473,21 +1571,21 @@ export default function App() {
                         onClick={() => setIsPrinterModalOpen(true)}
                         className={cn(
                           "flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold transition-all border shadow-sm",
-                          printerDevice 
+                          printerStatus !== 'disconnected' 
                             ? "bg-emerald-500/10 text-emerald-500 border-emerald-500/20" 
                             : "bg-slate-800 text-slate-400 border-slate-700 hover:border-slate-500"
                         )}
-                        title={printerDevice ? "Printer Connected" : "Click to connect Phomemo M220/M110"}
+                        title={printerStatus !== 'disconnected' ? "Printer Connected" : "Click to connect Phomemo M110"}
                       >
-                        {isConnectingPrinter ? (
+                        {printerStatus === 'connecting' ? (
                           <span className="animate-pulse flex items-center gap-1">
                             <RefreshCw size={10} className="animate-spin" />
                             Connecting...
                           </span>
-                        ) : printerDevice ? (
+                        ) : printerStatus !== 'disconnected' ? (
                           <>
-                            <Bluetooth size={12} className="text-emerald-500" />
-                            <span className="max-w-[80px] truncate">{printerDevice.name || 'Printer'}</span>
+                            {printerStatus === 'connected_bt' ? <Bluetooth size={12} className="text-emerald-500" /> : <Usb size={12} className="text-emerald-500" />}
+                            <span className="max-w-[80px] truncate">{connectedDeviceName || 'Printer'}</span>
                           </>
                         ) : (
                           <>
@@ -1514,221 +1612,230 @@ export default function App() {
                     </div>
                   </div>
 
-                  {labelType === 'store' ? (
-                    <div className="mt-8 w-full bg-slate-950/50 border border-slate-800 rounded-2xl p-6">
-                      <div className="flex items-center gap-2 mb-6 border-b border-slate-800 pb-4">
+                  <div className="mt-8 w-full">
+                    <button 
+                      onClick={() => setIsLayoutConfigOpen(!isLayoutConfigOpen)}
+                      className="w-full flex items-center justify-between bg-slate-950/50 border border-slate-800 rounded-2xl p-4 hover:bg-slate-900 transition-colors"
+                    >
+                      <div className="flex items-center gap-2">
                         <Settings size={16} className="text-emerald-500" />
-                        <h4 className="text-sm font-bold uppercase tracking-wider text-slate-200">Store Box Layout</h4>
+                        <h4 className="text-sm font-bold uppercase tracking-wider text-slate-200">
+                          {labelType === 'store' ? 'Store Box Layout' : 'Product Check Layout'}
+                        </h4>
                       </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        {/* Logo Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Logo</h5>
-                          <div className="grid grid-cols-3 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={storeBoxConfig.logo.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, logo: {...storeBoxConfig.logo, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={storeBoxConfig.logo.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, logo: {...storeBoxConfig.logo, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Width</label>
-                              <input type="number" value={storeBoxConfig.logo.width} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, logo: {...storeBoxConfig.logo, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
+                      <ChevronDown size={18} className={cn("text-slate-500 transition-transform", isLayoutConfigOpen ? "rotate-180" : "")} />
+                    </button>
 
-                        {/* Title Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Title</h5>
-                          <div className="grid grid-cols-3 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={storeBoxConfig.title.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, title: {...storeBoxConfig.title, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={storeBoxConfig.title.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, title: {...storeBoxConfig.title, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Size</label>
-                              <input type="number" value={storeBoxConfig.title.fontSize} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, title: {...storeBoxConfig.title, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
+                    <AnimatePresence>
+                      {isLayoutConfigOpen && (
+                        <motion.div 
+                          initial={{ height: 0, opacity: 0 }}
+                          animate={{ height: 'auto', opacity: 1 }}
+                          exit={{ height: 0, opacity: 0 }}
+                          className="overflow-hidden"
+                        >
+                          <div className="mt-4 bg-slate-950/50 border border-slate-800 rounded-2xl p-6">
+                            {labelType === 'store' ? (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {/* Logo Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Logo</h5>
+                                  <div className="grid grid-cols-3 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={storeBoxConfig.logo.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, logo: {...storeBoxConfig.logo, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={storeBoxConfig.logo.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, logo: {...storeBoxConfig.logo, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Width</label>
+                                      <input type="number" value={storeBoxConfig.logo.width} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, logo: {...storeBoxConfig.logo, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
 
-                        {/* Table Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Table</h5>
-                          <div className="grid grid-cols-4 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={storeBoxConfig.table.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={storeBoxConfig.table.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Width</label>
-                              <input type="number" value={storeBoxConfig.table.width} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Size</label>
-                              <input type="number" value={storeBoxConfig.table.fontSize} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
+                                {/* Title Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Title</h5>
+                                  <div className="grid grid-cols-3 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={storeBoxConfig.title.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, title: {...storeBoxConfig.title, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={storeBoxConfig.title.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, title: {...storeBoxConfig.title, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Size</label>
+                                      <input type="number" value={storeBoxConfig.title.fontSize} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, title: {...storeBoxConfig.title, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
 
-                        {/* Barcode Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Barcode</h5>
-                          <div className="grid grid-cols-4 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={storeBoxConfig.barcode.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={storeBoxConfig.barcode.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Width</label>
-                              <input type="number" value={storeBoxConfig.barcode.width} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Height</label>
-                              <input type="number" value={storeBoxConfig.barcode.height} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, height: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                                {/* Table Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Table</h5>
+                                  <div className="grid grid-cols-4 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={storeBoxConfig.table.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={storeBoxConfig.table.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Width</label>
+                                      <input type="number" value={storeBoxConfig.table.width} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Size</label>
+                                      <input type="number" value={storeBoxConfig.table.fontSize} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, table: {...storeBoxConfig.table, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
 
-                      <button 
-                        onClick={() => {
-                          setStoreBoxConfig({
-                            logo: { top: 15, left: 15, width: 90 },
-                            title: { top: 15, left: 120, fontSize: 16 },
-                            table: { top: 65, left: 15, width: 270, fontSize: 12 },
-                            barcode: { top: 140, left: 40, width: 220, height: 45 }
-                          });
-                        }}
-                        className="mt-6 text-[10px] font-bold text-slate-500 hover:text-emerald-500 transition-colors uppercase tracking-widest"
-                      >
-                        Reset to Defaults
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="mt-8 w-full bg-slate-950/50 border border-slate-800 rounded-2xl p-6">
-                      <div className="flex items-center gap-2 mb-6 border-b border-slate-800 pb-4">
-                        <Settings size={16} className="text-emerald-500" />
-                        <h4 className="text-sm font-bold uppercase tracking-wider text-slate-200">Product Check Layout</h4>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        {/* Logo Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Logo</h5>
-                          <div className="grid grid-cols-3 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={productCheckConfig.logo.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, logo: {...productCheckConfig.logo, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={productCheckConfig.logo.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, logo: {...productCheckConfig.logo, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Width</label>
-                              <input type="number" value={productCheckConfig.logo.width} onChange={(e) => setProductCheckConfig({...productCheckConfig, logo: {...productCheckConfig.logo, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
+                                {/* Barcode Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Barcode</h5>
+                                  <div className="grid grid-cols-4 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={storeBoxConfig.barcode.top} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={storeBoxConfig.barcode.left} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Width</label>
+                                      <input type="number" value={storeBoxConfig.barcode.width} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Height</label>
+                                      <input type="number" value={storeBoxConfig.barcode.height} onChange={(e) => setStoreBoxConfig({...storeBoxConfig, barcode: {...storeBoxConfig.barcode, height: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {/* Logo Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Logo</h5>
+                                  <div className="grid grid-cols-3 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={productCheckConfig.logo.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, logo: {...productCheckConfig.logo, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={productCheckConfig.logo.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, logo: {...productCheckConfig.logo, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Width</label>
+                                      <input type="number" value={productCheckConfig.logo.width} onChange={(e) => setProductCheckConfig({...productCheckConfig, logo: {...productCheckConfig.logo, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
 
-                        {/* Title Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Title</h5>
-                          <div className="grid grid-cols-4 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={productCheckConfig.title.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={productCheckConfig.title.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Size</label>
-                              <input type="number" value={productCheckConfig.title.fontSize} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Sub</label>
-                              <input type="number" value={productCheckConfig.title.subSize} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, subSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
+                                {/* Title Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Title</h5>
+                                  <div className="grid grid-cols-4 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={productCheckConfig.title.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={productCheckConfig.title.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Size</label>
+                                      <input type="number" value={productCheckConfig.title.fontSize} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Sub</label>
+                                      <input type="number" value={productCheckConfig.title.subSize} onChange={(e) => setProductCheckConfig({...productCheckConfig, title: {...productCheckConfig.title, subSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
 
-                        {/* Table Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Table</h5>
-                          <div className="grid grid-cols-4 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={productCheckConfig.table.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={productCheckConfig.table.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Width</label>
-                              <input type="number" value={productCheckConfig.table.width} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Size</label>
-                              <input type="number" value={productCheckConfig.table.fontSize} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
+                                {/* Table Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Table</h5>
+                                  <div className="grid grid-cols-4 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={productCheckConfig.table.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={productCheckConfig.table.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Width</label>
+                                      <input type="number" value={productCheckConfig.table.width} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, width: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Size</label>
+                                      <input type="number" value={productCheckConfig.table.fontSize} onChange={(e) => setProductCheckConfig({...productCheckConfig, table: {...productCheckConfig.table, fontSize: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
 
-                        {/* QR Config */}
-                        <div className="space-y-4">
-                          <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">QR Code</h5>
-                          <div className="grid grid-cols-3 gap-3">
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Top</label>
-                              <input type="number" value={productCheckConfig.qr.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, qr: {...productCheckConfig.qr, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Left</label>
-                              <input type="number" value={productCheckConfig.qr.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, qr: {...productCheckConfig.qr, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                            <div>
-                              <label className="block text-[9px] text-slate-500 mb-1">Size</label>
-                              <input type="number" value={productCheckConfig.qr.size} onChange={(e) => setProductCheckConfig({...productCheckConfig, qr: {...productCheckConfig.qr, size: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
-                            </div>
-                          </div>
-                        </div>
-                      </div>
+                                {/* QR Config */}
+                                <div className="space-y-4">
+                                  <h5 className="text-[10px] font-black text-slate-500 uppercase tracking-widest">QR Code</h5>
+                                  <div className="grid grid-cols-3 gap-3">
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Top</label>
+                                      <input type="number" value={productCheckConfig.qr.top} onChange={(e) => setProductCheckConfig({...productCheckConfig, qr: {...productCheckConfig.qr, top: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Left</label>
+                                      <input type="number" value={productCheckConfig.qr.left} onChange={(e) => setProductCheckConfig({...productCheckConfig, qr: {...productCheckConfig.qr, left: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] text-slate-500 mb-1">Size</label>
+                                      <input type="number" value={productCheckConfig.qr.size} onChange={(e) => setProductCheckConfig({...productCheckConfig, qr: {...productCheckConfig.qr, size: parseInt(e.target.value) || 0}})} className="w-full bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white" />
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
 
-                      <button 
-                        onClick={() => {
-                          setProductCheckConfig({
-                            logo: { top: 15, left: 15, width: 80 },
-                            title: { top: 15, left: 180, fontSize: 14, subSize: 8 },
-                            table: { top: 60, left: 15, width: 180, fontSize: 8.5 },
-                            qr: { top: 60, left: 210, size: 85 }
-                          });
-                        }}
-                        className="mt-6 text-[10px] font-bold text-slate-500 hover:text-emerald-500 transition-colors uppercase tracking-widest"
-                      >
-                        Reset to Defaults
-                      </button>
-                    </div>
-                  )}
+                            <button 
+                              onClick={() => {
+                                if (labelType === 'store') {
+                                  setStoreBoxConfig({
+                                    logo: { top: 15, left: 15, width: 90 },
+                                    title: { top: 15, left: 120, fontSize: 16 },
+                                    table: { top: 65, left: 15, width: 270, fontSize: 12 },
+                                    barcode: { top: 140, left: 40, width: 220, height: 45 }
+                                  });
+                                } else {
+                                  setProductCheckConfig({
+                                    logo: { top: 15, left: 15, width: 80 },
+                                    title: { top: 15, left: 180, fontSize: 14, subSize: 8 },
+                                    table: { top: 60, left: 15, width: 180, fontSize: 8.5 },
+                                    qr: { top: 60, left: 210, size: 85 }
+                                  });
+                                }
+                              }}
+                              className="mt-6 text-[10px] font-bold text-slate-500 hover:text-emerald-500 transition-colors uppercase tracking-widest"
+                            >
+                              Reset to Defaults
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
 
                   <div className="flex flex-wrap gap-3 mt-6 md:mt-10 justify-center">
                     <button 
@@ -1756,17 +1863,14 @@ export default function App() {
                     </button>
 
                     <button 
-                      onClick={() => printLabel(labelType === 'store' ? 'store-box-label' : 'product-check-label')}
-                      disabled={!printerDevice}
+                      onClick={() => setIsPrintPreviewOpen(true)}
                       className={cn(
                         "flex items-center gap-2 px-6 md:px-8 py-2.5 md:py-3 rounded-xl text-sm md:text-base font-bold transition-all shadow-lg active:scale-95",
-                        printerDevice 
-                          ? "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/20" 
-                          : "bg-slate-800 text-slate-600 cursor-not-allowed opacity-50"
+                        "bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-900/20"
                       )}
                     >
                       <Printer size={18} />
-                      Print via Bluetooth
+                      Print Label
                     </button>
                   </div>
                 </div>
@@ -1912,6 +2016,7 @@ export default function App() {
                           };
                           setProducts(prev => [...prev, newProd].sort((a, b) => a.name.localeCompare(b.name)));
                           setNewProductName('');
+                          toast.success(`Product "${newProd.name}" registered locally!`);
                         }
                       }}
                       className="bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all w-64"
@@ -1931,6 +2036,7 @@ export default function App() {
                           };
                           setProducts(prev => [...prev, newProd].sort((a, b) => a.name.localeCompare(b.name)));
                           setNewProductName('');
+                          toast.success(`Product "${newProd.name}" registered locally!`);
                         }
                       }}
                       disabled={!newProductName.trim()}
@@ -2462,199 +2568,94 @@ export default function App() {
           <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
             <div 
               className="absolute inset-0 bg-black/80 backdrop-blur-md"
-              onClick={() => !isConnectingPrinter && setIsPrinterModalOpen(false)}
+              onClick={() => setIsPrinterModalOpen(false)}
             />
             <motion.div 
               initial={{ opacity: 0, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
+              className="relative w-full max-w-md"
             >
-              <div className="p-6 border-b border-slate-800 flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-emerald-500/10 rounded-xl">
-                    <Printer className="text-emerald-500" size={20} />
-                  </div>
+              <PrinterPanel 
+                mode="connect"
+                onClose={() => setIsPrinterModalOpen(false)}
+                onStatusChange={(status, name) => {
+                  setPrinterStatus(status);
+                  setConnectedDeviceName(name);
+                }}
+                currentStatus={printerStatus}
+                btCharacteristic={btCharacteristic}
+                setBtCharacteristic={setBtCharacteristic}
+                usbPort={usbPort}
+                setUsbPort={setUsbPort}
+              />
+            </motion.div>
+          </div>
+        )}
+
+        {/* Print Preview Modal */}
+        {isPrintPreviewOpen && (
+          <div className="fixed inset-0 z-[100] flex items-start justify-center p-4 overflow-y-auto pt-12 md:pt-20">
+            <div 
+              className="absolute inset-0 bg-black/90 backdrop-blur-md"
+              onClick={() => setIsPrintPreviewOpen(false)}
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              className="relative w-full max-w-2xl mb-12"
+            >
+              <div className="bg-slate-900 border border-slate-800 rounded-3xl overflow-hidden shadow-2xl">
+                <div className="p-4 md:p-6 border-b border-slate-800 flex items-center gap-4">
+                  <button 
+                    onClick={() => setIsPrintPreviewOpen(false)}
+                    className="p-2 bg-slate-800 border border-slate-700 rounded-xl text-slate-400 hover:text-white transition-colors"
+                    title="Back"
+                  >
+                    <ChevronRight size={20} className="rotate-180" />
+                  </button>
                   <div>
-                    <h3 className="font-bold text-lg">Printer Connection</h3>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Bluetooth Setup & Diagnostics</p>
+                    <h3 className="text-lg md:text-xl font-bold text-white">Print Preview</h3>
+                    <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-0.5">Review your label before printing</p>
+                  </div>
+                  <div className={cn(
+                    "ml-auto px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
+                    printerStatus !== 'disconnected' ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"
+                  )}>
+                    {printerStatus !== 'disconnected' ? "Ready" : "Offline"}
                   </div>
                 </div>
-                <button 
-                  onClick={() => setIsPrinterModalOpen(false)}
-                  className="p-2 text-slate-500 hover:text-white transition-colors"
-                >
-                  <X size={20} />
-                </button>
-              </div>
 
-              <div className="flex-1 overflow-y-auto p-6 md:p-8">
-                {/* Warning for Iframe/Secure Context */}
-                {(diagnostics.inIframe || !diagnostics.secureContext || !diagnostics.bluetoothSupported) && (
-                  <div className="mb-8 p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl flex gap-4">
-                    <div className="p-2 bg-rose-500/20 rounded-xl h-fit">
-                      <BluetoothOff className="text-rose-500" size={20} />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-rose-500 mb-1">Environment Restriction Detected</h4>
-                      <p className="text-xs text-slate-400 leading-relaxed">
-                        {!diagnostics.bluetoothSupported ? "Your browser does not support Web Bluetooth. " : ""}
-                        {!diagnostics.secureContext ? "Web Bluetooth requires a Secure Context (HTTPS). " : ""}
-                        {diagnostics.inIframe ? "This app is running inside an iframe, which often blocks Bluetooth access. " : ""}
-                        <strong className="text-white block mt-2">Please open this app directly in Google Chrome or Microsoft Edge using the external URL.</strong>
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  {/* Connection Controls */}
-                  <div className="flex flex-col items-center text-center">
-                    <div className="relative mb-8">
-                      <div className="absolute inset-0 bg-emerald-500/20 blur-3xl rounded-full" />
-                      <div className={cn(
-                        "relative w-24 h-24 rounded-full border-2 flex items-center justify-center transition-all duration-500",
-                        isConnectingPrinter ? "border-emerald-500 border-t-transparent animate-spin" : "border-slate-800"
-                      )}>
-                        {!isConnectingPrinter && (
-                          <Bluetooth className={cn(
-                            "transition-colors duration-500",
-                            printerDevice ? "text-emerald-500" : "text-slate-700"
-                          )} size={40} />
-                        )}
-                      </div>
-                      {printerDevice && !isConnectingPrinter && (
-                        <div className="absolute -bottom-1 -right-1 bg-emerald-500 p-1.5 rounded-full border-4 border-slate-900">
-                          <CheckSquare className="text-white" size={12} />
-                        </div>
-                      )}
-                    </div>
-
-                    <h4 className="text-xl font-bold mb-2">
-                      {printerDevice ? printerDevice.name : "No Printer Connected"}
-                    </h4>
-                    <p className="text-sm text-slate-400 mb-8 max-w-xs">
-                      {printerDevice 
-                        ? "Your printer is ready to use. You can now print labels directly from the app."
-                        : "Connect your Phomemo M220, M110 or compatible Bluetooth label printer."}
-                    </p>
-
-                    <div className="w-full space-y-3">
-                      <button
-                        onClick={() => connectPrinter(true)}
-                        disabled={isConnectingPrinter}
-                        className={cn(
-                          "w-full py-4 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all",
-                          isConnectingPrinter 
-                            ? "bg-slate-800 text-slate-500 cursor-not-allowed"
-                            : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/20 active:scale-[0.98]"
-                        )}
-                      >
-                        {isConnectingPrinter ? (
-                          <>
-                            <RefreshCw className="animate-spin" size={18} />
-                            Searching...
-                          </>
+                <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-8">
+                  {/* Preview Side */}
+                  <div className="space-y-4">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Label Preview (80x50mm)</div>
+                    <div className="bg-white rounded-xl p-4 shadow-inner flex items-center justify-center min-h-[300px]">
+                      <div ref={labelRef} className="bg-white shadow-sm overflow-hidden">
+                        {labelType === 'store' ? (
+                          <StoreBoxLabel data={storeData} config={storeBoxConfig} />
                         ) : (
-                          <>
-                            <Bluetooth size={18} />
-                            {printerDevice ? "Change Printer" : "Search & Connect"}
-                          </>
+                          <ProductCheckLabel data={productData} config={productCheckConfig} />
                         )}
-                      </button>
-
-                      {!printerDevice && (
-                        <button
-                          onClick={() => connectPrinter(false)}
-                          disabled={isConnectingPrinter}
-                          className="w-full py-3 text-xs font-bold text-slate-500 hover:text-white transition-colors"
-                        >
-                          Fallback: Search All Devices
-                        </button>
-                      )}
-
-                      {printerDevice && (
-                        <button
-                          onClick={() => {
-                            printerDevice.gatt?.disconnect();
-                            setPrinterDevice(null);
-                            setPrinterCharacteristic(null);
-                            bluetoothService.clearLogs();
-                            setBluetoothLogs(bluetoothService.getLogs());
-                          }}
-                          className="w-full py-3 text-xs font-bold text-rose-500 hover:text-rose-400 transition-colors"
-                        >
-                          Disconnect Device
-                        </button>
-                      )}
+                      </div>
                     </div>
                   </div>
 
-                  {/* Diagnostics Panel */}
-                  <div className="bg-slate-950/50 border border-slate-800 rounded-2xl p-6 flex flex-col">
-                    <h5 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-4">System Diagnostics</h5>
-                    <div className="space-y-3 mb-6">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-500">Bluetooth Supported</span>
-                        <span className={diagnostics.bluetoothSupported ? "text-emerald-500" : "text-rose-500"}>
-                          {diagnostics.bluetoothSupported ? "Yes" : "No"}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-500">Secure Context (HTTPS)</span>
-                        <span className={diagnostics.secureContext ? "text-emerald-500" : "text-rose-500"}>
-                          {diagnostics.secureContext ? "Yes" : "No"}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-500">Running in Iframe</span>
-                        <span className={diagnostics.inIframe ? "text-amber-500" : "text-emerald-500"}>
-                          {diagnostics.inIframe ? "Yes (May Block)" : "No"}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-slate-500">GATT Connected</span>
-                        <span className={printerDevice?.gatt?.connected ? "text-emerald-500" : "text-slate-600"}>
-                          {printerDevice?.gatt?.connected ? "Yes" : "No"}
-                        </span>
-                      </div>
-                    </div>
-
-                    <h5 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Debug Logs</h5>
-                    <div className="flex-1 bg-black/40 rounded-xl p-3 font-mono text-[9px] overflow-y-auto max-h-[150px] space-y-1 border border-slate-800/50">
-                      {bluetoothLogs.length === 0 ? (
-                        <span className="text-slate-700 italic">No logs yet...</span>
-                      ) : (
-                        bluetoothLogs.map((log, i) => (
-                          <div key={i} className="text-slate-400 border-b border-slate-800/30 pb-1 last:border-0">
-                            {log}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-6 bg-slate-950 border-t border-slate-800 shrink-0">
-                <div className="flex flex-col md:flex-row justify-between gap-4">
-                  <div className="flex-1">
-                    <h5 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Quick Guide</h5>
-                    <ul className="text-[10px] text-slate-400 space-y-1">
-                      <li>• Use <strong className="text-white">Chrome</strong> or <strong className="text-white">Edge</strong> on Desktop or Android.</li>
-                      <li>• For iOS, use the <strong className="text-white">Bluefy</strong> browser app.</li>
-                      <li>• Ensure the printer is ON and not paired with other apps.</li>
-                    </ul>
-                  </div>
-                  <div className="flex items-end">
-                    <button 
-                      onClick={() => {
-                        bluetoothService.clearLogs();
-                        setBluetoothLogs(bluetoothService.getLogs());
+                  {/* Print Controls Side */}
+                  <div className="flex flex-col">
+                    <PrinterPanel 
+                      mode="print"
+                      onPrint={handlePrintFromPreview}
+                      onClose={() => setIsPrintPreviewOpen(false)}
+                      onStatusChange={(status, name) => {
+                        setPrinterStatus(status);
+                        setConnectedDeviceName(name);
                       }}
-                      className="text-[9px] font-bold text-slate-600 hover:text-white uppercase tracking-widest"
-                    >
-                      Clear Logs
-                    </button>
+                      currentStatus={printerStatus}
+                      btCharacteristic={btCharacteristic}
+                      setBtCharacteristic={setBtCharacteristic}
+                      usbPort={usbPort}
+                      setUsbPort={setUsbPort}
+                    />
                   </div>
                 </div>
               </div>

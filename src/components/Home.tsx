@@ -30,7 +30,8 @@ import { User } from 'firebase/auth';
 
 interface HomeProps {
   onSelectModule: (module: 'labels' | 'fibre' | 'ink' | 'database' | 'timeclock' | 'production' | 'fibre-analysis') => void;
-  printerDevice: any;
+  printerStatus: 'disconnected' | 'connecting' | 'connected_bt' | 'connected_usb';
+  connectedDeviceName: string | null;
   onConnectPrinter: () => void;
   user: User;
 }
@@ -187,7 +188,7 @@ const DEFAULT_AREAS = [
   }
 ];
 
-const Home: React.FC<HomeProps> = ({ onSelectModule, printerDevice, onConnectPrinter, user }) => {
+const Home: React.FC<HomeProps> = ({ onSelectModule, printerStatus, connectedDeviceName, onConnectPrinter, user }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [orderedAreaIds, setOrderedAreaIds] = useState<string[]>([]);
   const [hiddenAreaIds, setHiddenAreaIds] = useState<string[]>([]);
@@ -310,16 +311,17 @@ const Home: React.FC<HomeProps> = ({ onSelectModule, printerDevice, onConnectPri
             onClick={onConnectPrinter}
             className={cn(
               "flex items-center gap-3 px-4 py-2 rounded-xl transition-all border",
-              printerDevice 
+              printerStatus !== 'disconnected' 
                 ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-500" 
                 : "bg-slate-800/50 border-slate-700 text-slate-400 hover:border-slate-500"
             )}
           >
-            <Printer size={16} className={cn(printerDevice ? "text-emerald-500" : "text-slate-500")} />
+            <Printer size={16} className={cn(printerStatus !== 'disconnected' ? "text-emerald-500" : "text-slate-500")} />
             <div className="text-left">
               <p className="text-[9px] uppercase font-bold tracking-wider opacity-60">Printer</p>
               <p className="text-[11px] font-mono leading-none mt-0.5">
-                {printerDevice ? printerDevice.name : "Disconnected"}
+                {printerStatus === 'connecting' ? "Connecting..." : 
+                 printerStatus !== 'disconnected' ? (connectedDeviceName || "Connected") : "Disconnected"}
               </p>
             </div>
           </button>

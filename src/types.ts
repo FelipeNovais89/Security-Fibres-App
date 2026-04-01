@@ -71,6 +71,8 @@ export interface PrintedPaperReel {
   status: PrintedReelStatus;
   defects?: string;
   defectsQty?: number;
+  cutWaste?: number;
+  printWaste?: number;
   usedEntireSourceReel: boolean;
   notes?: string;
 }
@@ -83,6 +85,7 @@ export interface FreshCutBag {
   productCode?: string;
   weight: number;
   cuttingDate: number;
+  machineId?: string;
   status: FreshCutBagStatus;
   notes?: string;
 }

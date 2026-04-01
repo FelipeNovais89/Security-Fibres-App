@@ -12,6 +12,7 @@ import {
   LayoutGrid,
   Trash2,
   CheckCircle2,
+  Pause,
   AlertCircle,
   Edit2,
   Save,
@@ -23,7 +24,8 @@ import {
   Layers,
   Database,
   Camera,
-  AlertTriangle
+  AlertTriangle,
+  Wrench
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from '../utils/cn';
@@ -49,8 +51,8 @@ interface Machine {
   id: string;
   name: string;
   bay: string;
-  type: 'blower' | 'shaker';
-  status: 'clean' | 'in_production' | 'needs_cleaning';
+  type: 'blower' | 'shaker' | 'cutting';
+  status: 'clean' | 'in_production' | 'needs_cleaning' | 'broken' | 'fixing';
   currentBagId?: string;
   currentBagIds?: string[];
   sourceBags?: { id: string; weightUsed: number; usedEntirely: boolean }[];
@@ -394,23 +396,18 @@ const Production: React.FC<ProductionProps> = ({
 
   // Cutting Form State
   const [cuttingSourceReel, setCuttingSourceReel] = useState('');
-  const [cuttingNumBags, setCuttingNumBags] = useState(1);
-  const [cuttingBagWeights, setCuttingBagWeights] = useState<string[]>(['']);
-
-  // Update bag weights array when number of bags changes
-  useEffect(() => {
-    setCuttingBagWeights(prev => {
-      const newWeights = [...prev];
-      if (cuttingNumBags > newWeights.length) {
-        for (let i = newWeights.length; i < cuttingNumBags; i++) {
-          newWeights.push(prev[0] || ''); // Default to the first bag's weight or empty
-        }
-      } else if (cuttingNumBags < newWeights.length) {
-        return newWeights.slice(0, cuttingNumBags);
-      }
-      return newWeights;
-    });
-  }, [cuttingNumBags]);
+  const [cuttingBags, setCuttingBags] = useState<{ id: string; weight: number; machineId?: string }[]>([]);
+  const [currentBagWeight, setCurrentBagWeight] = useState('');
+  const [showCuttingFinalizeModal, setShowCuttingFinalizeModal] = useState(false);
+  const [isReelFinished, setIsReelFinished] = useState<boolean | null>(null);
+  const [cuttingCutWaste, setCuttingCutWaste] = useState('');
+  const [cuttingPrintWaste, setCuttingPrintWaste] = useState('');
+  const [isAddingBag, setIsAddingBag] = useState(false);
+  const [bagSelectedMachines, setBagSelectedMachines] = useState<string[]>([]);
+  const [showPrintWasteModal, setShowPrintWasteModal] = useState(false);
+  const [selectedCuttingMachines, setSelectedCuttingMachines] = useState<string[]>([]);
+  const [cuttingStep, setCuttingStep] = useState<'machines' | 'reel' | 'cutting'>('machines');
+  const [machineBags, setMachineBags] = useState<Record<string, { id: string; weight: number }[]>>({});
 
   // Blowing Form State
   const [blowingSelectedBags, setBlowingSelectedBags] = useState<{ id: string; weightUsed: number; usedEntirely: boolean }[]>([]);
@@ -423,32 +420,10 @@ const Production: React.FC<ProductionProps> = ({
   // Machines State
   const [machines, setMachines] = useState<Machine[]>(() => {
     const saved = localStorage.getItem('fiberqc_machines');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        // Ensure shakers exist in the list
-        if (!parsed.some((m: any) => m.type === 'shaker')) {
-          const blowers = parsed.map((m: any) => ({ ...m, type: 'blower' }));
-          const shakers: Machine[] = Array.from({ length: 12 }, (_, i) => ({
-            id: `s${i + 1}`,
-            name: `Shaker ${String(i + 1).padStart(2, '0')}`,
-            bay: `Area ${String(Math.floor(i / 4) + 1)}`,
-            type: 'shaker',
-            status: 'clean',
-            assignedProduct: ''
-          }));
-          return [...blowers, ...shakers];
-        }
-        return parsed.map((m: any) => ({ ...m, type: m.type || (m.id.startsWith('s') ? 'shaker' : 'blower') }));
-      } catch (e) {
-        console.error("Failed to parse machines", e);
-      }
-    }
-    
     const blowers: Machine[] = Array.from({ length: 4 }, (_, i) => ({
       id: `b${i + 1}`,
       name: `Blower ${String(i + 1).padStart(2, '0')}`,
-      bay: `Bay ${String.fromCharCode(65 + i)}`,
+      bay: `Bay ${i + 1}`,
       type: 'blower',
       status: 'clean',
       assignedProduct: ''
@@ -463,12 +438,93 @@ const Production: React.FC<ProductionProps> = ({
       assignedProduct: ''
     }));
 
-    return [...blowers, ...shakers];
+    const cutters: Machine[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `M${i + 1}`,
+      name: `Machine ${String(i + 1).padStart(2, '0')}`,
+      bay: 'Fixed',
+      type: 'cutting',
+      status: 'clean',
+      assignedProduct: ''
+    }));
+
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        // Migrate bay letters to numbers for blowers
+        const migrated = parsed.map((m: any) => {
+          if (m.type === 'blower' || m.id.startsWith('b')) {
+            const bayLetter = m.bay.replace('Bay ', '');
+            if (isNaN(Number(bayLetter))) {
+              const letterMap: Record<string, string> = { 'A': '1', 'B': '2', 'C': '3', 'D': '4', 'E': '5', 'F': '6' };
+              return { ...m, bay: `Bay ${letterMap[bayLetter] || bayLetter}` };
+            }
+          }
+          // Migrate Cutter names to Machine and IDs from c to M
+          if (m.type === 'cutting' || m.id.startsWith('c') || m.id.startsWith('M')) {
+            let updatedM = { ...m };
+            if (m.name.startsWith('Cutter ')) {
+              updatedM.name = m.name.replace('Cutter ', 'Machine ');
+            }
+            if (m.id.startsWith('c')) {
+              updatedM.id = m.id.replace('c', 'M');
+            }
+            return updatedM;
+          }
+          return m;
+        });
+
+        // Ensure shakers exist in the list
+        let updatedList = [...migrated];
+        if (!updatedList.some((m: any) => m.type === 'shaker')) {
+          updatedList = [...updatedList.filter((m: any) => m.type !== 'shaker'), ...shakers];
+        }
+
+        // Ensure cutters exist in the list
+        if (!updatedList.some((m: any) => m.type === 'cutting')) {
+          updatedList = [...updatedList, ...cutters];
+        }
+
+        return updatedList.map((m: any) => ({ 
+          ...m, 
+          type: m.type || (m.id.startsWith('s') ? 'shaker' : m.id.startsWith('c') ? 'cutting' : 'blower') 
+        }));
+      } catch (e) {
+        console.error("Failed to parse machines", e);
+      }
+    }
+
+    return [...blowers, ...shakers, ...cutters];
   });
 
   useEffect(() => {
     localStorage.setItem('fiberqc_machines', JSON.stringify(machines));
   }, [machines]);
+
+  // Migrate machine names from Cutter to Machine if needed
+  useEffect(() => {
+    setMachines(prev => prev.map(m => {
+      if (m.type === 'cutting' && m.name.startsWith('Cutter ')) {
+        return { ...m, name: m.name.replace('Cutter ', 'Machine ') };
+      }
+      return m;
+    }));
+  }, []);
+
+  // Migrate machine bays from letters to numbers if needed
+  useEffect(() => {
+    setMachines(prev => prev.map(m => {
+      if (m.type === 'blower' && m.bay.startsWith('Bay ')) {
+        const bayChar = m.bay.replace('Bay ', '');
+        if (isNaN(Number(bayChar))) {
+          const blowerNum = parseInt(m.name.replace('Blower ', ''));
+          if (!isNaN(blowerNum)) {
+            return { ...m, bay: `Bay ${blowerNum}` };
+          }
+        }
+      }
+      return m;
+    }));
+  }, []);
 ;
 
   // Auto-select blower/shaker if a machine is already assigned to the selected bag's product
@@ -581,32 +637,155 @@ const Production: React.FC<ProductionProps> = ({
     setActiveTab('inventory');
   };
 
+  const handleAddBagToCuttingList = () => {
+    if (!cuttingSourceReel || !currentBagWeight || bagSelectedMachines.length === 0) return;
+    
+    const reel = printedReels.find(r => r.serialNumber === cuttingSourceReel);
+    if (!reel) return;
+
+    // Generate bag ID based on existing bags for this reel
+    const existingBagsCount = freshCutBags.filter(b => b.parentReelSerial === cuttingSourceReel).length;
+    const bagId = `${cuttingSourceReel}/${existingBagsCount + 1}`;
+    
+    // Use machine IDs directly as they now use 'M'
+    const machineId = bagSelectedMachines.join(', ');
+    
+    const newBag: FreshCutBag = {
+      id: bagId,
+      parentReelSerial: reel.serialNumber,
+      customer: reel.customer,
+      colour: reel.colour,
+      productCode: reel.productCode,
+      weight: parseFloat(currentBagWeight) || 0,
+      cuttingDate: Date.now(),
+      machineId,
+      status: 'Available for Blowing'
+    };
+
+    setFreshCutBags(prev => [...prev, newBag]);
+    setCurrentBagWeight('');
+    setBagSelectedMachines([]);
+    setIsAddingBag(false);
+  };
+
   const handleStartCutting = () => {
-    if (!cuttingSourceReel || cuttingNumBags <= 0) return;
+    if (!cuttingSourceReel || selectedCuttingMachines.length === 0) return;
 
     const reel = printedReels.find(r => r.serialNumber === cuttingSourceReel);
     if (!reel) return;
 
-    const newBags: FreshCutBag[] = [];
-    for (let i = 1; i <= cuttingNumBags; i++) {
-      newBags.push({
-        id: `${reel.serialNumber}/${i}`,
-        parentReelSerial: reel.serialNumber,
-        customer: reel.customer,
-        colour: reel.colour,
-        productCode: reel.productCode,
-        weight: parseFloat(cuttingBagWeights[i-1]) || 0,
-        cuttingDate: Date.now(),
-        status: 'Available for Blowing'
-      });
-    }
+    const productIdentifier = reel.productCode || `${reel.customer} • ${reel.colour}`;
 
-    setFreshCutBags(prev => [...prev, ...newBags]);
-    setPrintedReels(prev => prev.map(r => r.serialNumber === cuttingSourceReel ? { ...r, status: 'Cut' } : r));
+    // Update machines: status to in_production and auto-populate assignedProduct
+    setMachines(prev => prev.map(m => {
+      if (selectedCuttingMachines.includes(m.id)) {
+        return {
+          ...m,
+          status: 'in_production',
+          currentBagSerialNumber: reel.serialNumber,
+          currentProduct: productIdentifier,
+          assignedProduct: m.assignedProduct || productIdentifier
+        };
+      }
+      return m;
+    }));
+
+    setCuttingStep('cutting');
+  };
+
+  const handleConfirmFinalize = () => {
+    if (!cuttingSourceReel) return;
     
+    const reel = printedReels.find(r => r.serialNumber === cuttingSourceReel);
+    if (!reel) return;
+
+    // Update reel status and weights
+    setPrintedReels(prev => prev.map(r => {
+      if (r.serialNumber === cuttingSourceReel) {
+        return { 
+          ...r, 
+          status: isReelFinished ? 'Cut' : 'Available for Cutting',
+          cutWaste: (r.cutWaste || 0) + (parseFloat(cuttingCutWaste) || 0),
+          printWaste: (r.printWaste || 0) + (parseFloat(cuttingPrintWaste) || 0)
+        };
+      }
+      return r;
+    }));
+
+    // Reset machines status
+    setMachines(prev => prev.map(m => {
+      if (selectedCuttingMachines.includes(m.id)) {
+        return {
+          ...m,
+          status: 'clean', // Or 'needs_cleaning' if required
+          currentBagSerialNumber: undefined,
+          currentProduct: undefined
+        };
+      }
+      return m;
+    }));
+    
+    // Reset form
     setCuttingSourceReel('');
-    setCuttingNumBags(1);
-    setCuttingBagWeights(['']);
+    setCuttingBags([]);
+    setCurrentBagWeight('');
+    setShowCuttingFinalizeModal(false);
+    setIsReelFinished(null);
+    setCuttingCutWaste('');
+    setCuttingPrintWaste('');
+    setSelectedCuttingMachines([]);
+    setCuttingStep('machines');
+    setMachineBags({});
+    setActiveTab('inventory');
+  };
+
+  const handleConfirmPrintWaste = () => {
+    if (!cuttingSourceReel) return;
+    
+    setPrintedReels(prev => prev.map(r => {
+      if (r.serialNumber === cuttingSourceReel) {
+        return { 
+          ...r, 
+          printWaste: (r.printWaste || 0) + (parseFloat(cuttingPrintWaste) || 0)
+        };
+      }
+      return r;
+    }));
+    
+    setCuttingPrintWaste('');
+    setShowPrintWasteModal(false);
+  };
+
+  const handleFinalizeCutting = () => {
+    if (cuttingSourceReel) {
+      setShowCuttingFinalizeModal(true);
+    }
+  };
+
+  const handlePauseCutting = () => {
+    if (!cuttingSourceReel) return;
+    
+    if (cuttingBags.length > 0) {
+      const reel = printedReels.find(r => r.serialNumber === cuttingSourceReel);
+      if (reel) {
+        const newBags: FreshCutBag[] = cuttingBags.map(bag => ({
+          id: bag.id,
+          parentReelSerial: reel.serialNumber,
+          customer: reel.customer,
+          colour: reel.colour,
+          productCode: reel.productCode,
+          weight: bag.weight,
+          cuttingDate: Date.now(),
+          status: 'Available for Blowing'
+        }));
+        setFreshCutBags(prev => [...prev, ...newBags]);
+      }
+    }
+    
+    // Reset form
+    setCuttingSourceReel('');
+    setCuttingBags([]);
+    setCurrentBagWeight('');
     setActiveTab('inventory');
   };
 
@@ -622,6 +801,7 @@ const Production: React.FC<ProductionProps> = ({
     ));
     
     const firstBag = freshCutBags.find(b => b.id === blowingSelectedBags[0].id);
+    const productIdentifier = firstBag?.productCode || (firstBag ? `${firstBag.customer} • ${firstBag.colour}` : 'Mixed Bags');
 
     setMachines(prev => prev.map(m => 
       m.id === selectedBlower 
@@ -634,8 +814,8 @@ const Production: React.FC<ProductionProps> = ({
             currentBagSerialNumber: blowingSelectedBags.length > 1 
               ? `${blowingSelectedBags.length} Bags` 
               : blowingSelectedBags[0].id,
-            currentProduct: firstBag ? `${firstBag.customer} • ${firstBag.colour}` : 'Mixed Bags',
-            assignedProduct: m.assignedProduct || (firstBag ? `${firstBag.customer} • ${firstBag.colour}` : '')
+            currentProduct: productIdentifier,
+            assignedProduct: m.assignedProduct || productIdentifier
           } 
         : m
     ));
@@ -663,8 +843,25 @@ const Production: React.FC<ProductionProps> = ({
       return sum + sb.weightUsed;
     }, 0);
 
+    // Generate standardized serial number: BB + Bay + DDMMYY / Sequential
+    const now = new Date();
+    const day = String(now.getDate()).padStart(2, '0');
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const year = String(now.getFullYear()).slice(-2);
+    const dateStr = `${day}${month}${year}`;
+    
+    const bayNumber = machine.bay.replace('Bay ', '');
+    const prefix = `BB${bayNumber}${dateStr}/`;
+    
+    // Calculate sequential number for this day and bay
+    const dailyBags = blownBags.filter(b => b.id.startsWith(prefix));
+    const nextNum = dailyBags.length + 1;
+    const sequential = String(nextNum).padStart(2, '0');
+    
+    const bagId = `${prefix}${sequential}`;
+
     const newBlownBag: BlownBag = {
-      id: uuidv4(),
+      id: bagId,
       parentBagIds: sourceBagsInfo.map(sb => sb.id),
       sourceBags: sourceBagsInfo,
       customer: firstBag.customer,
@@ -755,6 +952,8 @@ const Production: React.FC<ProductionProps> = ({
     const machine = machines.find(m => m.id === selectedShaker);
     if (!bag || !machine) return;
 
+    const productIdentifier = bag.productCode || `${bag.customer} • ${bag.colour}`;
+
     setBlownBags(prev => prev.map(b => b.id === shakingSourceBag ? { ...b, status: 'In Shaking' } : b));
     setShakenBags(prev => prev.map(b => b.id === shakingSourceBag ? { ...b, status: 'In Shaking' } : b));
     
@@ -765,8 +964,8 @@ const Production: React.FC<ProductionProps> = ({
             status: 'in_production', 
             currentBagId: bag.id, 
             currentBagSerialNumber: bag.id,
-            currentProduct: `${bag.customer} • ${bag.colour}`,
-            assignedProduct: m.assignedProduct || `${bag.customer} • ${bag.colour}`
+            currentProduct: productIdentifier,
+            assignedProduct: m.assignedProduct || productIdentifier
           } 
         : m
     ));
@@ -874,6 +1073,14 @@ const Production: React.FC<ProductionProps> = ({
     ));
   };
 
+  const handleUpdateMachineStatus = (machineId: string, status: Machine['status']) => {
+    setMachines(prev => prev.map(m => 
+      m.id === machineId 
+        ? { ...m, status } 
+        : m
+    ));
+  };
+
   const handleAssignProduct = (machineId: string, productCode: string) => {
     setMachines(prev => prev.map(m => 
       m.id === machineId 
@@ -922,22 +1129,68 @@ const Production: React.FC<ProductionProps> = ({
     setShakenBags(prev => prev.filter(b => b.id !== id));
   };
 
-  const availablePrintedReels = printedReels.filter(r => r.status === 'Available for Cutting');
-  const availableFreshCutBags = freshCutBags.filter(b => b.status === 'Available for Blowing');
+  const availablePrintedReels = printedReels.filter(r => {
+    if (r.status !== 'Available for Cutting') return false;
+    
+    // Filter by assigned product of selected cutting machines
+    if (selectedCuttingMachines.length > 0) {
+      const selectedMachinesData = machines.filter(m => selectedCuttingMachines.includes(m.id));
+      const assignedProducts = selectedMachinesData
+        .map(m => m.assignedProduct)
+        .filter(p => p && p.trim() !== '');
+      
+      if (assignedProducts.length > 0) {
+        // If any selected machine has an assigned product, the reel must match it
+        // We'll check if the reel's product name matches any of the assigned products
+        // Assuming assignedProduct stores the product name/code
+        return assignedProducts.some(ap => 
+          r.productCode === ap || 
+          r.colour === ap || 
+          `${r.customer} • ${r.colour}` === ap
+        );
+      }
+    }
+    
+    return true;
+  });
+  const availableFreshCutBags = freshCutBags.filter(b => {
+    if (b.status !== 'Available for Blowing') return false;
+    
+    if (selectedBlower) {
+      const machine = machines.find(m => m.id === selectedBlower);
+      if (machine && machine.assignedProduct && machine.assignedProduct.trim() !== '') {
+        return b.productCode === machine.assignedProduct || `${b.customer} • ${b.colour}` === machine.assignedProduct;
+      }
+    }
+    return true;
+  });
+
   const availableBlownBags = [
     ...blownBags.filter(b => b.status === 'Available for Shaking').map(b => ({
       id: b.id,
       productCode: b.productCode,
+      customer: b.customer,
+      colour: b.colour,
       weight: b.weight,
       label: `${b.id} (Blown - ${b.productCode} - ${b.weight}kg)`
     })),
     ...shakenBags.filter(b => b.status === 'D-Bag').map(b => ({
       id: b.id,
       productCode: b.productCode,
+      customer: b.customer,
+      colour: b.colour,
       weight: b.dBagWeight || 0,
       label: `${b.id} (D${b.dBagLevel} - ${b.productCode} - ${b.dBagWeight}kg)`
     }))
-  ];
+  ].filter(b => {
+    if (selectedShaker) {
+      const machine = machines.find(m => m.id === selectedShaker);
+      if (machine && machine.assignedProduct && machine.assignedProduct.trim() !== '') {
+        return b.productCode === machine.assignedProduct || `${b.customer} • ${b.colour}` === machine.assignedProduct;
+      }
+    }
+    return true;
+  });
 
   const blowingHistory = blownBags.map(b => {
     const machine = machines.find(m => m.id === b.machineId);
@@ -1225,7 +1478,7 @@ const Production: React.FC<ProductionProps> = ({
                         className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
                       >
                         <option value="">Select colour...</option>
-                        {Array.from(new Set(products.map(p => p.colour).filter(Boolean))).map(colour => (
+                        {Array.from(new Set(products.map(p => p.colour || p.name).filter(Boolean))).map(colour => (
                           <option key={colour} value={colour}>{colour}</option>
                         ))}
                       </select>
@@ -1468,87 +1721,262 @@ const Production: React.FC<ProductionProps> = ({
           >
             <div className="lg:col-span-5 space-y-6">
               <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
-                <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
-                  <Plus className="text-blue-500" size={20} />
-                  New Cutting Process
-                </h3>
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-lg font-bold flex items-center gap-2">
+                    <Plus className="text-blue-500" size={20} />
+                    New Cutting Process
+                  </h3>
+                  <div className="flex gap-1">
+                    {['machines', 'reel', 'cutting'].map((step) => (
+                      <div 
+                        key={step}
+                        className={cn(
+                          "w-2 h-2 rounded-full",
+                          cuttingStep === step ? "bg-blue-500" : "bg-slate-800"
+                        )}
+                      />
+                    ))}
+                  </div>
+                </div>
                 
                 <div className="space-y-4">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Printed Reel</label>
-                    <select 
-                      value={cuttingSourceReel}
-                      onChange={(e) => setCuttingSourceReel(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
-                    >
-                      <option value="">Select a reel...</option>
-                      {availablePrintedReels.map(roll => (
-                        <option key={roll.serialNumber} value={roll.serialNumber}>{roll.serialNumber} ({roll.customer} • {roll.colour})</option>
-                      ))}
-                    </select>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Number of Bags</label>
-                    <div className="flex items-center gap-4">
-                      <input 
-                        type="range" 
-                        min="1" 
-                        max="20" 
-                        value={cuttingNumBags}
-                        onChange={(e) => setCuttingNumBags(parseInt(e.target.value))}
-                        className="flex-1 h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                      />
-                      <span className="bg-slate-950 border border-slate-800 w-12 h-10 flex items-center justify-center rounded-xl font-mono font-bold text-blue-400">
-                        {cuttingNumBags}
-                      </span>
+                  {cuttingStep === 'machines' && (
+                    <div className="space-y-4 animate-in fade-in slide-in-from-right-4">
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Machines to Work With</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {machines.filter(m => m.type === 'cutting').map(m => (
+                          <button
+                            key={m.id}
+                            onClick={() => {
+                              setSelectedCuttingMachines(prev => 
+                                prev.includes(m.id) ? prev.filter(id => id !== m.id) : [...prev, m.id]
+                              );
+                            }}
+                            className={cn(
+                              "p-3 rounded-xl border text-xs font-bold transition-all text-left flex items-center justify-between",
+                              selectedCuttingMachines.includes(m.id)
+                                ? "bg-blue-500/10 border-blue-500 text-blue-400"
+                                : "bg-slate-950 border-slate-800 text-slate-500 hover:border-slate-700"
+                            )}
+                          >
+                            {m.name}
+                            {selectedCuttingMachines.includes(m.id) && <CheckCircle2 size={14} />}
+                          </button>
+                        ))}
+                      </div>
+                      <button
+                        onClick={() => setCuttingStep('reel')}
+                        disabled={selectedCuttingMachines.length === 0}
+                        className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-xs transition-all mt-4"
+                      >
+                        Next: Select Reel
+                      </button>
                     </div>
-                  </div>
+                  )}
 
-                  {cuttingSourceReel && (
-                    <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">
-                      <table className="w-full text-left text-xs">
-                        <thead>
-                          <tr className="bg-slate-900/50 border-b border-slate-800">
-                            <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider">Bag ID</th>
-                            <th className="px-4 py-3 font-bold text-slate-500 uppercase tracking-wider">Weight (Kg)</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-800">
-                          {Array.from({ length: cuttingNumBags }).map((_, i) => (
-                            <tr key={i} className="hover:bg-slate-800/30 transition-colors">
-                              <td className="px-4 py-3 font-mono text-slate-400">
-                                {cuttingSourceReel}/{i + 1}
-                              </td>
-                              <td className="px-4 py-2">
+                  {cuttingStep === 'reel' && (
+                    <div className="space-y-4 animate-in fade-in slide-in-from-right-4">
+                      <button 
+                        onClick={() => setCuttingStep('machines')}
+                        className="text-[10px] text-slate-500 hover:text-slate-400 font-bold uppercase tracking-widest flex items-center gap-1"
+                      >
+                        ← Back to Machines
+                      </button>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Printed Reel</label>
+                        <select 
+                          value={cuttingSourceReel}
+                          onChange={(e) => setCuttingSourceReel(e.target.value)}
+                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                        >
+                          <option value="">Select a reel...</option>
+                          {availablePrintedReels.map(roll => (
+                            <option key={roll.serialNumber} value={roll.serialNumber}>{roll.serialNumber} ({roll.customer} • {roll.colour})</option>
+                          ))}
+                        </select>
+                      </div>
+                      <button
+                        onClick={handleStartCutting}
+                        disabled={!cuttingSourceReel}
+                        className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-xs transition-all mt-4"
+                      >
+                        Start Cutting
+                      </button>
+                    </div>
+                  )}
+
+                  {cuttingStep === 'cutting' && (
+                    <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+                      <div className="flex items-center justify-between">
+                        <button 
+                          onClick={() => setCuttingStep('reel')}
+                          className="text-[10px] text-slate-500 hover:text-slate-400 font-bold uppercase tracking-widest flex items-center gap-1"
+                        >
+                          ← Back to Reel
+                        </button>
+                        <span className="text-[10px] font-mono text-blue-400 font-bold">{cuttingSourceReel}</span>
+                      </div>
+
+                      <div className="space-y-4">
+                        {isAddingBag ? (
+                          <div className="bg-slate-950 border border-slate-800 rounded-2xl p-5 space-y-4 animate-in fade-in zoom-in-95">
+                            <div className="flex items-center justify-between">
+                              <h4 className="text-sm font-bold text-slate-200">New Fresh Cut Bag</h4>
+                              <button onClick={() => setIsAddingBag(false)} className="text-slate-500 hover:text-slate-400">
+                                <X size={16} />
+                              </button>
+                            </div>
+                            
+                            <div className="space-y-3">
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Weight (kg)</label>
                                 <input 
                                   type="number" 
                                   step="0.01"
+                                  value={currentBagWeight}
+                                  onChange={(e) => setCurrentBagWeight(e.target.value)}
                                   placeholder="0.00"
-                                  value={cuttingBagWeights[i] || ''}
-                                  onChange={(e) => {
-                                    const newWeights = [...cuttingBagWeights];
-                                    newWeights[i] = e.target.value;
-                                    setCuttingBagWeights(newWeights);
-                                  }}
-                                  className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                                  autoFocus
                                 />
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                              </div>
+                              
+                              <div>
+                                <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Source Machines</label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  {selectedCuttingMachines.map(machineId => {
+                                    const machine = machines.find(m => m.id === machineId);
+                                    return (
+                                      <button
+                                        key={machineId}
+                                        onClick={() => {
+                                          setBagSelectedMachines(prev => 
+                                            prev.includes(machineId) ? prev.filter(id => id !== machineId) : [...prev, machineId]
+                                          );
+                                        }}
+                                        className={cn(
+                                          "p-2 rounded-lg border text-[10px] font-bold transition-all flex items-center justify-between",
+                                          bagSelectedMachines.includes(machineId)
+                                            ? "bg-blue-500/10 border-blue-500 text-blue-400"
+                                            : "bg-slate-900 border-slate-800 text-slate-500"
+                                        )}
+                                      >
+                                        {machine?.name}
+                                        {bagSelectedMachines.includes(machineId) && <CheckCircle2 size={12} />}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="flex gap-3 pt-2">
+                              <button
+                                onClick={() => setIsAddingBag(false)}
+                                className="flex-1 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-slate-400 rounded-xl text-xs font-bold transition-all"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={handleAddBagToCuttingList}
+                                disabled={!currentBagWeight || bagSelectedMachines.length === 0}
+                                className="flex-[2] px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-blue-900/20"
+                              >
+                                Add Bag
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              setIsAddingBag(true);
+                              setBagSelectedMachines(selectedCuttingMachines.length === 1 ? [selectedCuttingMachines[0]] : []);
+                            }}
+                            className="w-full py-8 bg-slate-950 border-2 border-dashed border-slate-800 hover:border-blue-500/50 hover:bg-blue-500/5 text-slate-500 hover:text-blue-400 rounded-3xl transition-all flex flex-col items-center justify-center gap-2 group"
+                          >
+                            <div className="w-12 h-12 rounded-full bg-slate-900 flex items-center justify-center group-hover:bg-blue-500/10 transition-all">
+                              <Plus size={24} />
+                            </div>
+                            <span className="text-xs font-bold uppercase tracking-widest">Add Fresh Cut Bag</span>
+                          </button>
+                        )}
+                      </div>
+
+                      {(() => {
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+                        const bagsMadeToday = freshCutBags.filter(b => 
+                          b.parentReelSerial === cuttingSourceReel && 
+                          b.cuttingDate >= today.getTime()
+                        );
+
+                        if (bagsMadeToday.length === 0) return null;
+
+                        return (
+                          <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden max-h-[300px] overflow-y-auto custom-scrollbar">
+                            <div className="px-4 py-2 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+                              <div className="flex flex-col">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Bags Made Today</span>
+                                <span className="text-[8px] text-slate-600 font-medium">Bags already in stock</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[10px] font-bold text-blue-400">{bagsMadeToday.length} items</span>
+                              </div>
+                            </div>
+                            <table className="w-full text-left text-[10px]">
+                              <tbody className="divide-y divide-slate-800">
+                                {bagsMadeToday.map((bag, idx) => (
+                                  <tr key={idx} className="hover:bg-slate-800/30 transition-colors">
+                                    <td className="px-4 py-2 font-mono text-slate-400">{bag.id}</td>
+                                    <td className="px-4 py-2 text-slate-200">
+                                      {bag.weight}kg
+                                      {bag.machineId && (
+                                        <span className="ml-2 text-[8px] text-slate-500 italic">({bag.machineId.replace(/c/g, 'M')})</span>
+                                      )}
+                                    </td>
+                                    <td className="px-4 py-2 text-right">
+                                      <button 
+                                        onClick={() => setFreshCutBags(prev => prev.filter(b => b.id !== bag.id))}
+                                        className="text-slate-600 hover:text-rose-500 transition-colors"
+                                      >
+                                        <Trash2 size={12} />
+                                      </button>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })()}
+
+                      <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-800">
+                        <button
+                          onClick={() => {
+                            setShowCuttingFinalizeModal(true);
+                          }}
+                          className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20 text-xs"
+                        >
+                          <CheckCircle2 size={18} />
+                          Finalizar Corte
+                        </button>
+                        <button
+                          onClick={handlePauseCutting}
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 text-xs"
+                        >
+                          <Pause size={18} />
+                          Pausar Corte
+                        </button>
+                        <button
+                          onClick={() => setShowPrintWasteModal(true)}
+                          className="col-span-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 text-xs"
+                        >
+                          <Scissors size={16} />
+                          Print Waste
+                        </button>
+                      </div>
                     </div>
                   )}
-                  
-                  <button
-                    onClick={handleStartCutting}
-                    disabled={!cuttingSourceReel}
-                    className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/20"
-                  >
-                    <Scissors size={18} />
-                    Cut Reel into Bags
-                  </button>
                 </div>
               </div>
             </div>
@@ -1751,29 +2179,42 @@ const Production: React.FC<ProductionProps> = ({
                 
                 <div className="space-y-4">
                   <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Blower Machine</label>
+                    <select 
+                      value={selectedBlower}
+                      onChange={(e) => setSelectedBlower(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                    >
+                      <option value="">Select blower...</option>
+                      {machines.filter(m => m.type === 'blower' && (m.status === 'clean' || (m.status === 'in_production' && !m.currentBagId))).map(m => (
+                        <option key={m.id} value={m.id}>{m.name} ({m.bay}) {m.assignedProduct ? `- ${m.assignedProduct}` : ''}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className={cn("transition-all duration-300", !selectedBlower && "opacity-50 pointer-events-none")}>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Fresh Cut Bags</label>
-                    <div className="flex gap-2 mb-4">
-                      <select 
-                        value={""}
-                        onChange={(e) => {
-                          const bagId = e.target.value;
-                          if (!bagId) return;
-                          const bag = freshCutBags.find(b => b.id === bagId);
-                          if (bag && !blowingSelectedBags.some(sb => sb.id === bagId)) {
-                            setBlowingSelectedBags([...blowingSelectedBags, { id: bagId, weightUsed: bag.weight, usedEntirely: true }]);
-                          }
-                        }}
-                        className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
-                      >
-                        <option value="">Add a bag...</option>
-                        {availableFreshCutBags.filter(bag => !blowingSelectedBags.some(sb => sb.id === bag.id)).map(bag => (
-                          <option key={bag.id} value={bag.id}>{bag.id} ({bag.customer} • {bag.colour} - {bag.weight}kg)</option>
-                        ))}
-                      </select>
-                    </div>
+                    <select 
+                      value={""}
+                      disabled={!selectedBlower}
+                      onChange={(e) => {
+                        const bagId = e.target.value;
+                        if (!bagId) return;
+                        const bag = freshCutBags.find(b => b.id === bagId);
+                        if (bag && !blowingSelectedBags.some(sb => sb.id === bagId)) {
+                          setBlowingSelectedBags([...blowingSelectedBags, { id: bagId, weightUsed: bag.weight, usedEntirely: true }]);
+                        }
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
+                    >
+                      <option value="">Add a bag...</option>
+                      {availableFreshCutBags.filter(bag => !blowingSelectedBags.some(sb => sb.id === bag.id)).map(bag => (
+                        <option key={bag.id} value={bag.id}>{bag.id} ({bag.customer} • {bag.colour} - {bag.weight}kg)</option>
+                      ))}
+                    </select>
 
                     {blowingSelectedBags.length > 0 && (
-                      <div className="space-y-3 mb-6">
+                      <div className="space-y-3 mt-4 mb-6">
                         {blowingSelectedBags.map((sb, index) => {
                           const bag = freshCutBags.find(b => b.id === sb.id);
                           return (
@@ -1873,20 +2314,6 @@ const Production: React.FC<ProductionProps> = ({
                         })}
                       </div>
                     )}
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Select Blower Machine</label>
-                    <select 
-                      value={selectedBlower}
-                      onChange={(e) => setSelectedBlower(e.target.value)}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
-                    >
-                      <option value="">Select blower...</option>
-                      {machines.filter(m => m.type === 'blower' && (m.status === 'clean' || (m.status === 'in_production' && !m.currentBagId))).map(m => (
-                        <option key={m.id} value={m.id}>{m.name} ({m.bay}) {m.assignedProduct ? `- ${m.assignedProduct}` : ''}</option>
-                      ))}
-                    </select>
                   </div>
                   
                   <button
@@ -2028,7 +2455,19 @@ const Production: React.FC<ProductionProps> = ({
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all appearance-none"
                     >
                       <option value="">Select shaker...</option>
-                      {machines.filter(m => m.type === 'shaker' && (m.status === 'clean' || (m.status === 'in_production' && !m.currentBagId))).map(m => (
+                      {machines.filter(m => {
+                        if (m.type !== 'shaker') return false;
+                        if (m.status !== 'clean' && !(m.status === 'in_production' && !m.currentBagId)) return false;
+                        
+                        // If a bag is selected, only show machines that are unassigned or assigned to this product
+                        if (shakingSourceBag) {
+                          const bag = availableBlownBags.find(b => b.id === shakingSourceBag);
+                          if (bag && m.assignedProduct && m.assignedProduct.trim() !== '') {
+                            return bag.productCode === m.assignedProduct || `${bag.customer} • ${bag.colour}` === m.assignedProduct;
+                          }
+                        }
+                        return true;
+                      }).map(m => (
                         <option key={m.id} value={m.id}>{m.name} ({m.bay}) {m.assignedProduct ? `- ${m.assignedProduct}` : ''}</option>
                       ))}
                     </select>
@@ -2097,6 +2536,8 @@ const Production: React.FC<ProductionProps> = ({
                       "bg-slate-950 border rounded-2xl p-5 transition-all",
                       m.status === 'clean' ? "border-slate-800" : 
                       m.status === 'in_production' ? "border-blue-500/30 bg-blue-500/5" : 
+                      m.status === 'broken' ? "border-rose-600/50 bg-rose-600/5" :
+                      m.status === 'fixing' ? "border-amber-500/30 bg-amber-500/5" :
                       "border-rose-500/30 bg-rose-500/5"
                     )}
                   >
@@ -2109,9 +2550,14 @@ const Production: React.FC<ProductionProps> = ({
                         "w-8 h-8 rounded-lg flex items-center justify-center",
                         m.status === 'clean' ? "bg-emerald-500/10 text-emerald-500" : 
                         m.status === 'in_production' ? "bg-blue-500/10 text-blue-500" : 
+                        m.status === 'broken' ? "bg-rose-600/10 text-rose-600" :
+                        m.status === 'fixing' ? "bg-amber-500/10 text-amber-500" :
                         "bg-rose-500/10 text-rose-500"
                       )}>
-                        {m.status === 'in_production' ? <Fan className="animate-spin-slow" size={16} /> : <Factory size={16} />}
+                        {m.status === 'in_production' ? <Fan className="animate-spin-slow" size={16} /> : 
+                         m.status === 'broken' ? <AlertTriangle size={16} /> :
+                         m.status === 'fixing' ? <Wrench size={16} /> :
+                         <Factory size={16} />}
                       </div>
                     </div>
 
@@ -2122,6 +2568,8 @@ const Production: React.FC<ProductionProps> = ({
                           "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest",
                           m.status === 'clean' ? "bg-emerald-500/10 text-emerald-500" : 
                           m.status === 'in_production' ? "bg-blue-500/10 text-blue-500" : 
+                          m.status === 'broken' ? "bg-rose-600/10 text-rose-600" :
+                          m.status === 'fixing' ? "bg-amber-500/10 text-amber-500" :
                           "bg-rose-500/10 text-rose-500"
                         )}>
                           {m.status.replace('_', ' ')}
@@ -2133,7 +2581,7 @@ const Production: React.FC<ProductionProps> = ({
                         <select 
                           value={m.assignedProduct || ''}
                           onChange={(e) => handleAssignProduct(m.id, e.target.value)}
-                          disabled={m.status === 'in_production'}
+                          disabled={m.status === 'in_production' || m.status === 'broken' || m.status === 'fixing'}
                           className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-[10px] outline-none focus:ring-1 focus:ring-blue-500/50 transition-all appearance-none disabled:opacity-50"
                         >
                           <option value="">No product assigned</option>
@@ -2180,10 +2628,33 @@ const Production: React.FC<ProductionProps> = ({
                         </button>
                       )}
 
+                      {m.status === 'broken' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'fixing')}
+                          className="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <Wrench size={14} />
+                          Start Fixing
+                        </button>
+                      )}
+
+                      {m.status === 'fixing' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'needs_cleaning')}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <CheckCircle2 size={14} />
+                          Fixed (Needs Clean)
+                        </button>
+                      )}
+
                       {m.status === 'clean' && (
-                        <div className="w-full py-2 bg-emerald-500/5 text-emerald-500/50 rounded-xl text-[10px] font-bold uppercase tracking-widest text-center border border-emerald-500/10">
-                          Ready for Use
-                        </div>
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'broken')}
+                          className="w-full py-2 bg-slate-800 hover:bg-rose-900/50 text-slate-400 hover:text-rose-400 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border border-slate-800 hover:border-rose-500/50"
+                        >
+                          Report Broken
+                        </button>
                       )}
                     </div>
                   </div>
@@ -2206,6 +2677,8 @@ const Production: React.FC<ProductionProps> = ({
                       "bg-slate-950 border rounded-2xl p-5 transition-all",
                       m.status === 'clean' ? "border-slate-800" : 
                       m.status === 'in_production' ? "border-indigo-500/30 bg-indigo-500/5" : 
+                      m.status === 'broken' ? "border-rose-600/50 bg-rose-600/5" :
+                      m.status === 'fixing' ? "border-amber-500/30 bg-amber-500/5" :
                       "border-rose-500/30 bg-rose-500/5"
                     )}
                   >
@@ -2218,9 +2691,14 @@ const Production: React.FC<ProductionProps> = ({
                         "w-8 h-8 rounded-lg flex items-center justify-center",
                         m.status === 'clean' ? "bg-emerald-500/10 text-emerald-500" : 
                         m.status === 'in_production' ? "bg-indigo-500/10 text-indigo-500" : 
+                        m.status === 'broken' ? "bg-rose-600/10 text-rose-600" :
+                        m.status === 'fixing' ? "bg-amber-500/10 text-amber-500" :
                         "bg-rose-500/10 text-rose-500"
                       )}>
-                        {m.status === 'in_production' ? <Layers className="animate-pulse" size={16} /> : <Factory size={16} />}
+                        {m.status === 'in_production' ? <Layers className="animate-pulse" size={16} /> : 
+                         m.status === 'broken' ? <AlertTriangle size={16} /> :
+                         m.status === 'fixing' ? <Wrench size={16} /> :
+                         <Factory size={16} />}
                       </div>
                     </div>
 
@@ -2231,6 +2709,8 @@ const Production: React.FC<ProductionProps> = ({
                           "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest",
                           m.status === 'clean' ? "bg-emerald-500/10 text-emerald-500" : 
                           m.status === 'in_production' ? "bg-indigo-500/10 text-indigo-500" : 
+                          m.status === 'broken' ? "bg-rose-600/10 text-rose-600" :
+                          m.status === 'fixing' ? "bg-amber-500/10 text-amber-500" :
                           "bg-rose-500/10 text-rose-500"
                         )}>
                           {m.status.replace('_', ' ')}
@@ -2242,7 +2722,7 @@ const Production: React.FC<ProductionProps> = ({
                         <select 
                           value={m.assignedProduct || ''}
                           onChange={(e) => handleAssignProduct(m.id, e.target.value)}
-                          disabled={m.status === 'in_production'}
+                          disabled={m.status === 'in_production' || m.status === 'broken' || m.status === 'fixing'}
                           className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-[10px] outline-none focus:ring-1 focus:ring-indigo-500/50 transition-all appearance-none disabled:opacity-50"
                         >
                           <option value="">No product assigned</option>
@@ -2280,10 +2760,149 @@ const Production: React.FC<ProductionProps> = ({
                         </button>
                       )}
 
+                      {m.status === 'broken' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'fixing')}
+                          className="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <Wrench size={14} />
+                          Start Fixing
+                        </button>
+                      )}
+
+                      {m.status === 'fixing' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'needs_cleaning')}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <CheckCircle2 size={14} />
+                          Fixed (Needs Clean)
+                        </button>
+                      )}
+
                       {m.status === 'clean' && (
-                        <div className="w-full py-2 bg-emerald-500/5 text-emerald-500/50 rounded-xl text-[10px] font-bold uppercase tracking-widest text-center border border-emerald-500/10">
-                          Ready for Use
-                        </div>
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'broken')}
+                          className="w-full py-2 bg-slate-800 hover:bg-rose-900/50 text-slate-400 hover:text-rose-400 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border border-slate-800 hover:border-rose-500/50"
+                        >
+                          Report Broken
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Cutting Machines Section */}
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-xl">
+              <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
+                <Scissors className="text-emerald-500" size={20} />
+                Cutting Machines
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {machines.filter(m => m.type === 'cutting').map((m) => (
+                  <div 
+                    key={m.id} 
+                    className={cn(
+                      "bg-slate-950 border rounded-2xl p-5 transition-all",
+                      m.status === 'clean' ? "border-slate-800" : 
+                      m.status === 'in_production' ? "border-emerald-500/30 bg-emerald-500/5" : 
+                      m.status === 'broken' ? "border-rose-600/50 bg-rose-600/5" :
+                      m.status === 'fixing' ? "border-amber-500/30 bg-amber-500/5" :
+                      "border-rose-500/30 bg-rose-500/5"
+                    )}
+                  >
+                    <div className="flex justify-between items-start mb-4">
+                      <div>
+                        <h4 className="font-bold text-slate-200">{m.name}</h4>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-widest">{m.bay}</p>
+                      </div>
+                      <div className={cn(
+                        "w-8 h-8 rounded-lg flex items-center justify-center",
+                        m.status === 'clean' ? "bg-emerald-500/10 text-emerald-500" : 
+                        m.status === 'in_production' ? "bg-emerald-500/10 text-emerald-500" : 
+                        m.status === 'broken' ? "bg-rose-600/10 text-rose-600" :
+                        m.status === 'fixing' ? "bg-amber-500/10 text-amber-500" :
+                        "bg-rose-500/10 text-rose-500"
+                      )}>
+                        {m.status === 'in_production' ? <Scissors className="animate-pulse" size={16} /> : 
+                         m.status === 'broken' ? <AlertTriangle size={16} /> :
+                         m.status === 'fixing' ? <Wrench size={16} /> :
+                         <Factory size={16} />}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 mb-4">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-500 uppercase tracking-widest font-bold">Status</span>
+                        <span className={cn(
+                          "px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-widest",
+                          m.status === 'clean' ? "bg-emerald-500/10 text-emerald-500" : 
+                          m.status === 'in_production' ? "bg-emerald-500/10 text-emerald-500" : 
+                          m.status === 'broken' ? "bg-rose-600/10 text-rose-600" :
+                          m.status === 'fixing' ? "bg-amber-500/10 text-amber-500" :
+                          "bg-rose-500/10 text-rose-500"
+                        )}>
+                          {m.status.replace('_', ' ')}
+                        </span>
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800/50">
+                        <label className="block text-[10px] text-slate-500 uppercase tracking-widest font-bold mb-1">Assigned Product</label>
+                        <select 
+                          value={m.assignedProduct || ''}
+                          onChange={(e) => handleAssignProduct(m.id, e.target.value)}
+                          disabled={m.status === 'in_production' || m.status === 'broken' || m.status === 'fixing'}
+                          className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-[10px] outline-none focus:ring-1 focus:ring-emerald-500/50 transition-all appearance-none disabled:opacity-50"
+                        >
+                          <option value="">No product assigned</option>
+                          {products.map(p => (
+                            <option key={p.id} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2">
+                      {m.status === 'needs_cleaning' && (
+                        <button
+                          onClick={() => handleCleanMachine(m.id)}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <CheckCircle2 size={14} />
+                          Mark as Clean
+                        </button>
+                      )}
+
+                      {m.status === 'broken' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'fixing')}
+                          className="w-full py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <Wrench size={14} />
+                          Start Fixing
+                        </button>
+                      )}
+
+                      {m.status === 'fixing' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'needs_cleaning')}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all flex items-center justify-center gap-2"
+                        >
+                          <CheckCircle2 size={14} />
+                          Fixed (Needs Clean)
+                        </button>
+                      )}
+
+                      {m.status === 'clean' && (
+                        <button
+                          onClick={() => handleUpdateMachineStatus(m.id, 'broken')}
+                          className="w-full py-2 bg-slate-800 hover:bg-rose-900/50 text-slate-400 hover:text-rose-400 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border border-slate-800 hover:border-rose-500/50"
+                        >
+                          Report Broken
+                        </button>
                       )}
                     </div>
                   </div>
@@ -2602,6 +3221,144 @@ const Production: React.FC<ProductionProps> = ({
               </div>
             </div>
           </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Cutting Finalization Modal */}
+      <AnimatePresence>
+        {showCuttingFinalizeModal && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl max-w-md w-full"
+            >
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-3 bg-blue-500/10 text-blue-500 rounded-2xl">
+                  <Scissors size={24} />
+                </div>
+                <h3 className="text-xl font-bold">Finalizar Corte</h3>
+              </div>
+
+              {isReelFinished === null ? (
+                <div className="space-y-6">
+                  <p className="text-slate-400">A bobina foi finalizada?</p>
+                  <div className="grid grid-cols-2 gap-4">
+                    <button 
+                      onClick={() => setIsReelFinished(true)}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 rounded-xl transition-all"
+                    >
+                      Sim
+                    </button>
+                    <button 
+                      onClick={() => setIsReelFinished(false)}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-4 rounded-xl transition-all"
+                    >
+                      Não
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Cut Waste (Kg)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="0.00"
+                        value={cuttingCutWaste}
+                        onChange={(e) => setCuttingCutWaste(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Print Waste (Kg)</label>
+                      <input 
+                        type="number" 
+                        step="0.01"
+                        placeholder="0.00"
+                        value={cuttingPrintWaste}
+                        onChange={(e) => setCuttingPrintWaste(e.target.value)}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex gap-4">
+                    <button 
+                      onClick={handleConfirmFinalize}
+                      className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl transition-all"
+                    >
+                      Confirmar
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setIsReelFinished(null);
+                        setShowCuttingFinalizeModal(false);
+                      }}
+                      className="px-6 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-4 rounded-xl transition-all"
+                    >
+                      Voltar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </motion.div>
+          </div>
+        )}
+
+        {showPrintWasteModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-md w-full shadow-2xl"
+            >
+              <div className="flex items-center gap-4 mb-8">
+                <div className="w-12 h-12 rounded-2xl bg-blue-500/10 flex items-center justify-center text-blue-500">
+                  <Scissors size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-bold text-white">Print Waste</h3>
+                  <p className="text-sm text-slate-500">Adicionar desperdício de impressão</p>
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase mb-1 tracking-widest">Print Waste (Kg)</label>
+                  <input 
+                    type="number" 
+                    step="0.01"
+                    placeholder="0.00"
+                    value={cuttingPrintWaste}
+                    onChange={(e) => setCuttingPrintWaste(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+                  />
+                </div>
+                
+                <div className="flex gap-4">
+                  <button 
+                    onClick={handleConfirmPrintWaste}
+                    className="flex-1 bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl transition-all"
+                  >
+                    Confirmar
+                  </button>
+                  <button 
+                    onClick={() => {
+                      setShowPrintWasteModal(false);
+                      setCuttingPrintWaste('');
+                    }}
+                    className="px-6 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-4 rounded-xl transition-all"
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
